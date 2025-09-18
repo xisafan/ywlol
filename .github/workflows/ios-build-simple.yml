@@ -1,0 +1,49 @@
+name: 🚀 Simple iOS Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_version:
+        description: 'Flutter版本'
+        required: false
+        default: '3.24.3'
+
+jobs:
+  ios-build:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ github.event.inputs.flutter_version || '3.24.3' }}
+        channel: 'stable'
+        
+    - name: Flutter Dependencies
+      run: |
+        flutter pub get
+        
+    - name: iOS Dependencies  
+      run: |
+        cd ios
+        pod install
+        
+    - name: Build iOS
+      run: |
+        flutter build ios --no-codesign --debug
+        
+    - name: Package IPA
+      run: |
+        cd build/ios/iphoneos
+        mkdir Payload
+        cp -r Runner.app Payload/
+        zip -r ../../../ovofun-ios.ipa Payload/
+        
+    - name: Upload IPA
+      uses: actions/upload-artifact@v4
+      with:
+        name: ovofun-ios-app
+        path: ovofun-ios.ipa

@@ -1,0 +1,191 @@
+name: 🍎 Build iOS App
+
+on:
+  # 可以手动触发
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: '构建类型'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+        - debug
+        - release
+  
+  # 推送到main分支时自动触发
+  push:
+    branches: [ main ]
+  
+  # PR时触发
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-ios:
+    name: 🚀 Build iOS App
+    runs-on: macos-14 # 使用最新的macOS runner
+    
+    steps:
+    - name: 📦 Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: 📱 Setup iOS build environment
+      run: |
+        # 显示系统信息
+        echo "=== 系统信息 ==="
+        sw_vers
+        xcodebuild -version
+        echo "=== Xcode路径 ==="
+        xcode-select -p
+        
+    - name: 🔧 Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.24.3' # 使用稳定版本
+        channel: 'stable'
+        cache: true
+        
+    - name: 📋 Flutter doctor
+      run: |
+        flutter doctor -v
+        flutter --version
+        
+    - name: 📦 Get dependencies
+      run: |
+        flutter pub get
+        
+    - name: 🧹 Clean build
+      run: |
+        flutter clean
+        cd ios && rm -rf Pods Podfile.lock .symlinks && cd ..
+        
+    - name: 🔨 Pod install
+      run: |
+        cd ios
+        pod install --repo-update
+        cd ..
+        
+    - name: 🛠️ Build iOS (Debug)
+      if: ${{ github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == '' }}
+      run: |
+        flutter build ios --debug --no-codesign
+        
+    - name: 🛠️ Build iOS (Release)
+      if: ${{ github.event.inputs.build_type == 'release' }}
+      run: |
+        flutter build ios --release --no-codesign
+        
+    - name: 📁 Create IPA (Debug)
+      if: ${{ github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == '' }}
+      run: |
+        cd build/ios/iphoneos
+        mkdir -p Payload
+        cp -r Runner.app Payload/
+        zip -r ovofun-debug.ipa Payload/
+        mv ovofun-debug.ipa ../../../
+        
+    - name: 📁 Create IPA (Release)
+      if: ${{ github.event.inputs.build_type == 'release' }}
+      run: |
+        cd build/ios/iphoneos
+        mkdir -p Payload
+        cp -r Runner.app Payload/
+        zip -r ovofun-release.ipa Payload/
+        mv ovofun-release.ipa ../../../
+        
+    - name: 📊 Build info
+      run: |
+        echo "=== 构建信息 ==="
+        ls -la *.ipa || echo "未找到IPA文件"
+        if [ -f ovofun-debug.ipa ]; then
+          echo "Debug IPA大小: $(du -h ovofun-debug.ipa | cut -f1)"
+        fi
+        if [ -f ovofun-release.ipa ]; then
+          echo "Release IPA大小: $(du -h ovofun-release.ipa | cut -f1)"
+        fi
+        
+    - name: 🔄 Upload Debug IPA
+      if: ${{ github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ovofun-ios-debug
+        path: ovofun-debug.ipa
+        retention-days: 30
+        
+    - name: 🔄 Upload Release IPA
+      if: ${{ github.event.inputs.build_type == 'release' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ovofun-ios-release
+        path: ovofun-release.ipa
+        retention-days: 30
+        
+    - name: 📝 Create Release (仅Release构建)
+      if: ${{ github.event.inputs.build_type == 'release' && github.ref == 'refs/heads/main' }}
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ios-v${{ github.run_number }}
+        release_name: iOS Release v${{ github.run_number }}
+        body: |
+          🍎 **iOS应用自动构建发布**
+          
+          📱 **应用信息:**
+          - 应用名称: Ovofun
+          - 构建类型: Release
+          - 构建时间: ${{ github.event.head_commit.timestamp }}
+          - 提交哈希: ${{ github.sha }}
+          
+          📦 **安装说明:**
+          1. 下载 `ovofun-release.ipa` 文件
+          2. 使用 AltStore、TrollStore 或其他签名工具安装
+          3. 首次安装需要信任开发者证书
+          
+          ⚠️ **注意事项:**
+          - 这是未签名版本，需要自行签名或使用越狱设备
+          - 仅供测试使用，不可用于生产环境
+          
+          🔧 **技术信息:**
+          - Flutter版本: 3.24.3
+          - iOS最低版本: 13.0
+          - 构建环境: macOS-14
+        draft: false
+        prerelease: true
+        
+  build-summary:
+    name: 📋 Build Summary
+    runs-on: ubuntu-latest
+    needs: build-ios
+    if: always()
+    
+    steps:
+    - name: 📊 Summary
+      run: |
+        echo "## 🍎 iOS构建完成报告" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| 项目 | 状态 |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+        echo "| iOS构建 | ${{ needs.build-ios.result == 'success' && '✅ 成功' || '❌ 失败' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ needs.build-ios.result }}" == "success" ]; then
+          echo "### 🎉 构建成功！" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📱 **下载方式:**" >> $GITHUB_STEP_SUMMARY
+          echo "- 在Actions页面下载构建产物" >> $GITHUB_STEP_SUMMARY
+          echo "- 文件名: ovofun-*.ipa" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔧 **安装方法:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. 使用AltStore或类似工具签名安装" >> $GITHUB_STEP_SUMMARY
+          echo "2. 或者使用Xcode直接安装到设备" >> $GITHUB_STEP_SUMMARY
+          echo "3. 信任开发者证书后即可使用" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "### ❌ 构建失败" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "请检查构建日志排查问题。常见问题:" >> $GITHUB_STEP_SUMMARY
+          echo "- 依赖版本冲突" >> $GITHUB_STEP_SUMMARY
+          echo "- iOS配置问题" >> $GITHUB_STEP_SUMMARY
+          echo "- Xcode版本不匹配" >> $GITHUB_STEP_SUMMARY
+        fi
