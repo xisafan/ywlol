@@ -1,0 +1,62 @@
+allprojects {
+    repositories {
+        // 清华大学镜像源
+        maven { 
+            url 'https://mirrors.tuna.tsinghua.edu.cn/flutter'
+            name 'Tsinghua Flutter'
+        }
+        maven { 
+            url 'https://mirrors.tuna.tsinghua.edu.cn/dart-pub'
+            name 'Tsinghua Dart Pub'
+        }
+        
+        // 阿里云镜像源 - 主要推荐
+        maven { 
+            url 'https://maven.aliyun.com/repository/google'
+            name 'AliYun Google'
+        }
+        maven { 
+            url 'https://maven.aliyun.com/repository/public'
+            name 'AliYun Public'
+        }
+        maven { 
+            url 'https://maven.aliyun.com/repository/central'
+            name 'AliYun Central'
+        }
+        maven { 
+            url 'https://maven.aliyun.com/repository/gradle-plugin'
+            name 'AliYun Gradle'
+        }
+        
+        // 腾讯云镜像作为备用
+        maven { 
+            url 'https://mirrors.cloud.tencent.com/repository/maven/' 
+            name 'Tencent Maven'
+        }
+        
+        // 华为云镜像
+        maven { 
+            url 'https://repo.huaweicloud.com/repository/maven/' 
+            name 'Huawei Maven'
+        }
+        
+        // 官方仓库作为最后选择
+        google()
+        mavenCentral()
+        
+        // 添加JitPack仓库
+        maven { url 'https://jitpack.io' }
+    }
+}
+
+rootProject.buildDir = '../build'
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+subprojects {
+    project.evaluationDependsOn(':app')
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}

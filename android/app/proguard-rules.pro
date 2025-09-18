@@ -1,0 +1,2 @@
+-keep class com.umeng.** {*;}
+-keep class com.umeng.analytics.** {*;}
