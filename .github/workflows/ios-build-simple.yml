@@ -6,7 +6,7 @@ on:
       flutter_version:
         description: 'Flutter版本'
         required: false
-        default: '3.24.3'
+        default: '3.27.1'
 
 jobs:
   ios-build:
@@ -19,7 +19,7 @@ jobs:
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: ${{ github.event.inputs.flutter_version || '3.24.3' }}
+        flutter-version: ${{ github.event.inputs.flutter_version || '3.27.1' }}
         channel: 'stable'
         
     - name: Flutter Dependencies
