@@ -59,9 +59,21 @@ jobs:
           flutter clean
           cd ios && rm -rf Pods Podfile.lock .symlinks && cd ..
 
+      - name: 🔄 Fix iOS Configuration
+        run: |
+          chmod +x .github/scripts/fix_ios_config.sh
+          ./.github/scripts/fix_ios_config.sh
+
       - name: 🔨 Pod install
         run: |
+          echo "=== 开始 Pod 安装 ==="
           cd ios
+          echo "当前目录内容:"
+          ls -la
+          echo "Flutter目录内容:"
+          ls -la Flutter/
+          echo "检查Generated.xcconfig文件:"
+          ls -la Flutter/Generated.xcconfig || echo "Generated.xcconfig不存在"
           pod install --repo-update
           cd ..
 

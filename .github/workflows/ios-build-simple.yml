@@ -26,9 +26,17 @@ jobs:
         run: |
           flutter pub get
 
+      - name: 🔄 Fix iOS Configuration
+        run: |
+          chmod +x .github/scripts/fix_ios_config.sh
+          ./.github/scripts/fix_ios_config.sh
+
       - name: iOS Dependencies
         run: |
+          echo "=== Pod 安装 ==="
           cd ios
+          echo "检查Flutter配置文件:"
+          ls -la Flutter/Generated.xcconfig || echo "配置文件不存在"
           pod install
 
       - name: Build iOS
