@@ -358,14 +358,22 @@ try {
         // 检查更新
         $controller = new SystemController($pdo);
         $controller->checkUpdate($params);
-    } else if (preg_match('#^/v1/check_update$#', $api_path) && $method == 'GET') {
-        // 检查更新 (v1版本)
-        $controller = new SystemController($pdo);
-        $controller->checkUpdate($params);
     } else if (preg_match('#^/config$#', $api_path) && $method == 'GET') {
         // 获取应用配置
         $controller = new SystemController($pdo);
         $controller->getConfig();
+    } else if (preg_match('#^/versions$#', $api_path) && $method == 'GET') {
+        // 获取版本列表
+        $controller = new SystemController($pdo);
+        $controller->getVersionList($params);
+    } else if (preg_match('#^/versions/(\d+)$#', $api_path, $matches) && $method == 'GET') {
+        // 获取版本详情
+        $controller = new SystemController($pdo);
+        $controller->getVersionDetails($matches[1]);
+    } else if (preg_match('#^/current_versions$#', $api_path) && $method == 'GET') {
+        // 获取各平台当前最新版本
+        $controller = new SystemController($pdo);
+        $controller->getCurrentVersions();
     } else if (preg_match('#^/banners$#', $api_path) && $method == 'GET') {
         // 获取轮播图列表
         $controller = new BannerController($pdo);

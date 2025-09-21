@@ -73,8 +73,14 @@
 ### 构建环境
 - **macOS版本**: macOS-14 (latest)
 - **Xcode版本**: 最新稳定版
-- **Flutter版本**: 3.24.3
+- **Flutter版本**: 自动使用最新稳定版 (支持Dart SDK 3.7.0+)
 - **CocoaPods**: 最新版本
+
+### 🔧 IPA打包改进
+- ✅ **专用打包脚本**: 使用 `.github/scripts/create_ipa.sh` 确保正确生成IPA文件
+- ✅ **详细日志**: 完整的构建和打包过程日志，便于调试
+- ✅ **文件验证**: 自动检查Runner.app和IPA文件的完整性
+- ✅ **标准格式**: 生成标准iOS IPA格式，而非文件夹
 
 ### 主要依赖
 - media_kit (视频播放)

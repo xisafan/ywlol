@@ -42,8 +42,7 @@ jobs:
       - name: 🔧 Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.27.1" # 使用最新稳定版本，支持Dart SDK 3.7.0+
-          channel: "stable"
+          channel: "stable" # 使用最新稳定版本，自动支持最新Dart SDK
           cache: true
 
       - name: 📋 Flutter doctor
@@ -79,20 +78,14 @@ jobs:
       - name: 📁 Create IPA (Debug)
         if: ${{ github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == '' }}
         run: |
-          cd build/ios/iphoneos
-          mkdir -p Payload
-          cp -r Runner.app Payload/
-          zip -r ovofun-debug.ipa Payload/
-          mv ovofun-debug.ipa ../../../
+          chmod +x .github/scripts/create_ipa.sh
+          ./.github/scripts/create_ipa.sh debug ovofun
 
       - name: 📁 Create IPA (Release)
         if: ${{ github.event.inputs.build_type == 'release' }}
         run: |
-          cd build/ios/iphoneos
-          mkdir -p Payload
-          cp -r Runner.app Payload/
-          zip -r ovofun-release.ipa Payload/
-          mv ovofun-release.ipa ../../../
+          chmod +x .github/scripts/create_ipa.sh
+          ./.github/scripts/create_ipa.sh release ovofun
 
       - name: 📊 Build info
         run: |
