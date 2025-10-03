@@ -1,78 +1,69 @@
 name: iOS-ipa-build
 
 on:
-  workflow_dispatch:  # 手动触发工作流
+  workflow_dispatch:
 
 jobs:
   build-ios:
     name: 🎉 iOS Build
-    runs-on: macos-latest  # 必须使用 macOS 环境构建 iOS 应用
+    runs-on: macos-latest
     steps:
-      # 1. 检出代码仓库
       - name: Checkout repository code
         uses: actions/checkout@v3
 
-      # 2. 安装 Flutter 环境（稳定版，x64 架构）
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'  # 使用 Flutter 稳定版
-          architecture: x64  # 适配 macOS 最新环境架构
-
-      # 3. 安装 Flutter 项目依赖
+          channel: 'stable'
+          architecture: x64
+          
       - name: Install Flutter dependencies
         run: flutter pub get
-
-      # 4. 配置 Xcode 项目（禁用签名，避免构建报错）
+      
+      # 修复Xcode配置命令的语法错误，移除多余空格
       - name: Configure Xcode project (disable code signing)
         run: |
-          cd ios  # 进入 iOS 项目目录
-          # 通过 xcodebuild 命令设置签名相关参数，跳过签名检查
+          cd ios
           xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
-            DEVELOPMENT_TEAM="" \  # 空开发团队（适配无开发者账号场景）
-            CODE_SIGN_IDENTITY="" \  # 空签名身份
-            CODE_SIGNING_REQUIRED=NO \  # 禁用签名要求
-            CODE_SIGNING_ALLOWED=NO    # 不允许签名
-
-      # 5. 更新 CocoaPods 仓库并安装 iOS 依赖
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+      
       - name: Update CocoaPods repo
         run: pod repo update
-        working-directory: ios  # 限定在 ios 目录执行
-
+        working-directory: ios
+      
       - name: Install iOS dependencies (CocoaPods)
         run: pod install
-        working-directory: ios  # 安装 Podfile 中的依赖
+        working-directory: ios
 
-      # 6. 构建 iOS Release 版本（无签名）
       - name: Build iOS Release version (no codesign)
-        run: flutter build ios --release --no-codesign --verbose  # --verbose 便于调试构建问题
+        run: flutter build ios --release --no-codesign --verbose
 
-      # 7. 构建 IPA 包结构（iOS 要求 IPA 需包含 Payload 目录）
       - name: Create IPA directory structure
-        run: mkdir -p build/ios/iphoneos/Payload  # 创建 Payload 目录（确保路径存在）
-
+        run: mkdir -p build/ios/iphoneos/Payload
+        
       - name: Move app to Payload directory
-        run: mv build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/  # 将 Runner.app 移入 Payload
+        run: mv build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
 
-      # 8. 压缩为 IPA 文件（-9 表示最高压缩率，-qq 减少输出日志）
       - name: Zip to IPA file
         run: zip -qq -r -9 FlutterIpaExport.ipa Payload
-        working-directory: build/ios/iphoneos  # 在 iphoneos 目录执行压缩
+        working-directory: build/ios/iphoneos
 
-      # 9. 上传 IPA 到 GitHub Actions 产物（使用 v4 版本，修复弃用问题）
       - name: Upload IPA to workflow artifacts
-        uses: actions/upload-artifact@v4  # 关键：升级为 v4 版本，避免弃用报错
+        uses: actions/upload-artifact@v4
         with:
-          name: flutter-ios-ipa  # 产物名称（下载时显示）
-          path: build/ios/iphoneos/FlutterIpaExport.ipa  # IPA 文件路径
-          retention-days: 30  # 产物保留 30 天（可选，默认 90 天）
+          name: flutter-ios-ipa
+          path: build/ios/iphoneos/FlutterIpaExport.ipa
+          retention-days: 30
 
-      # 10. 上传 IPA 到 GitHub Release（如需发布到 Release 页，可保留此步骤）
       - name: Upload IPA to GitHub Release
         uses: svenstaro/upload-release-action@v2
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}  # GitHub 自动生成的 Token（无需手动配置）
-          file: build/ios/iphoneos/FlutterIpaExport.ipa  # IPA 文件路径
-          tag: v1.0  # Release 标签（需确保标签已创建，或先通过步骤创建）
-          overwrite: true  # 允许覆盖同标签下的旧文件
-          body: "This is the first iOS IPA release (built via GitHub Actions)"  # Release 描述
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: build/ios/iphoneos/FlutterIpaExport.ipa
+          tag: v1.0
+          overwrite: true
+          body: "This is the first iOS IPA release (built via GitHub Actions)"
+    
