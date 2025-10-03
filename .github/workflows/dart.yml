@@ -17,7 +17,7 @@ jobs:
           channel: 'stable'
           architecture: x64
 
-      # 1. 显示环境信息（确认Xcode/iOS版本兼容性）
+      # 1. 显示环境信息
       - name: Show environment info
         run: |
           flutter --version
@@ -25,77 +25,70 @@ jobs:
           pod --version
           echo "Xcode supported iOS SDKs: $(xcodebuild -showsdks | grep iphoneos | awk '{print $4}')"
 
-      # 2. 深度清理项目（清除旧依赖缓存）
+      # 2. 深度清理项目
       - name: Deep clean project
         run: |
           flutter clean
           rm -rf ios/Pods ios/Podfile.lock ios/.symlinks ~/.pub-cache
           rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Caches/CocoaPods
-          # 额外清理Flutter插件缓存
           rm -rf ios/Flutter/Flutter.podspec
 
-      # 3. 关键修复1：同步Flutter项目的iOS最低版本（与Podfile一致）
+      # 3. 同步Flutter项目的iOS最低版本（与Podfile一致）
       - name: Sync Flutter iOS deployment target
         run: |
-          # 1. 修改Flutter的Generated.xcconfig（全局配置文件）
+          # 修改Flutter全局配置文件
           FLUTTER_XCCONFIG="ios/Flutter/Generated.xcconfig"
           if [ -f "$FLUTTER_XCCONFIG" ]; then
-            # 确保IPHONEOS_DEPLOYMENT_TARGET为12.0（覆盖默认值）
             sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET=.*/IPHONEOS_DEPLOYMENT_TARGET=12.0/' "$FLUTTER_XCCONFIG"
             echo "✅ Updated $FLUTTER_XCCONFIG: IPHONEOS_DEPLOYMENT_TARGET=12.0"
           else
-            # 若文件不存在，创建并写入配置
             mkdir -p ios/Flutter
             echo "IPHONEOS_DEPLOYMENT_TARGET=12.0" > "$FLUTTER_XCCONFIG"
             echo "FLUTTER_ROOT=$(flutter root)" >> "$FLUTTER_XCCONFIG"
             echo "✅ Created $FLUTTER_XCCONFIG with iOS 12.0 target"
           fi
 
-          # 2. 修改Runner.xcodeproj的项目配置（确保项目级目标版本）
+          # 修改Runner.xcodeproj项目级配置
           cd ios
           sudo gem install xcodeproj --no-document
           ruby -e '
             require "xcodeproj"
             project = Xcodeproj::Project.open("Runner.xcodeproj")
-            # 更新项目级部署目标（而非仅target）
+            # 更新项目级部署目标
             project.build_configurations.each do |config|
               config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "12.0"
             end
-            # 更新所有target（包括Runner、RunnerTests）
+            # 更新所有target
             project.targets.each do |target|
               target.build_configurations.each do |config|
                 config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "12.0"
               end
             end
             project.save
-            puts "✅ Updated Runner.xcodeproj project-level deployment target to 12.0"
+            puts "✅ Updated Runner.xcodeproj to iOS 12.0"
           '
 
-      # 4. 安装Flutter依赖（此时依赖解析会使用12.0的目标版本）
-      - name: Install Flutter dependencies (with correct target)
+      # 4. 安装Flutter依赖
+      - name: Install Flutter dependencies
         run: |
-          # 强制Flutter使用更新后的部署目标
           export IPHONEOS_DEPLOYMENT_TARGET=12.0
           flutter pub get
-          # 验证bonsoir_darwin是否正确拉取
+          # 验证bonsoir_darwin依赖
           if grep -q "bonsoir_darwin" pubspec.lock; then
-            echo "✅ bonsoir_darwin dependency found in pubspec.lock"
+            echo "✅ bonsoir_darwin found in pubspec.lock"
           else
-            echo "❌ bonsoir_darwin not found in pubspec.lock"
+            echo "❌ bonsoir_darwin missing in pubspec.lock"
             cat pubspec.lock
             exit 1
           fi
 
-      # 5. 关键修复2：生成兼容的Podfile（明确12.0目标+依赖解析配置）
+      # 5. 生成兼容的Podfile
       - name: Generate compatible Podfile
         run: |
           cd ios
           cat > Podfile <<EOF
-          # 明确最低支持版本为12.0（与Flutter配置一致）
           platform :ios, '12.0'
           ENV['COCOAPODS_DISABLE_STATS'] = 'true'
-          # 启用新的依赖解析模式（解决部分插件兼容性）
-          ENV['COCOAPODS_PODFILE_EXPLICIT_VERSION'] = '1.16.2'
 
           project 'Runner', {
             'Debug' => :debug,
@@ -120,50 +113,48 @@ jobs:
           target 'Runner' do
             use_frameworks!
             use_modular_headers!
-            # 安装所有Flutter插件依赖（包括bonsoir_darwin）
             flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
           end
 
           post_install do |installer|
             installer.pods_project.targets.each do |target|
               flutter_additional_ios_build_settings(target)
-              
-              # 强制所有插件目标版本为12.0（兜底）
+              # 统一插件版本和签名配置
               target.build_configurations.each do |config|
                 config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "12.0"
-                # 禁用签名（后续构建用）
                 config.build_settings["DEVELOPMENT_TEAM"] = ""
                 config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
                 config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
-                # 抑制OpenGLES警告
                 config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
                 config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
               end
             end
           end
           EOF
-          echo "✅ Podfile generated with iOS 12.0 target"
+          echo "✅ Podfile generated"
 
-      # 6. 执行pod install（解决bonsoir_darwin依赖）
-      - name: Install CocoaPods dependencies (fix bonsoir_darwin)
+      # 6. 修复：正确执行Pod依赖更新（移除--no-repo-update错误选项）
+      - name: Install CocoaPods dependencies
         run: |
           cd ios
-          # 强制CocoaPods使用12.0目标版本解析依赖
           export IPHONEOS_DEPLOYMENT_TARGET=12.0
-          # 更新Pod仓库并安装（增加超时时间，避免网络问题）
-          pod repo update --verbose --no-repo-update
+          
+          # 1. 更新Pod仓库（仅更新trunk，避免全量更新耗时）
+          pod repo update trunk --verbose
+          
+          # 2. 执行pod install（用--no-repo-update避免重复更新仓库）
           pod install --verbose --no-repo-update
           
-          # 验证bonsoir_darwin是否成功安装
+          # 验证bonsoir_darwin安装
           if [ -d "Pods/bonsoir_darwin" ]; then
-            echo "✅ bonsoir_darwin pod installed successfully"
+            echo "✅ bonsoir_darwin pod installed"
           else
-            echo "❌ bonsoir_darwin pod not found in Pods/"
+            echo "❌ bonsoir_darwin pod missing"
             ls -la Pods/
             exit 1
           fi
 
-      # 7. 构建iOS（用xcodebuild强制应用配置）
+      # 7. 构建iOS
       - name: Build iOS with xcodebuild
         run: |
           cd ios
@@ -174,13 +165,10 @@ jobs:
             -sdk iphoneos \
             -derivedDataPath build/DerivedData \
             -archivePath build/Runner.xcarchive \
-            # 确保部署目标一致
             IPHONEOS_DEPLOYMENT_TARGET=12.0 \
-            # 禁用签名
             DEVELOPMENT_TEAM="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
-            # 抑制警告
             OTHER_SWIFT_FLAGS="-DGLES_SILENCE_DEPRECATION" \
             clean \
             -verbose
@@ -190,7 +178,7 @@ jobs:
         run: |
           APP_PATH="ios/build/Products/Release-iphoneos/Runner.app"
           if [ ! -d "$APP_PATH" ]; then
-            echo "❌ Runner.app not found at $APP_PATH"
+            echo "❌ Runner.app not found"
             exit 1
           fi
           
