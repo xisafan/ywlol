@@ -17,53 +17,92 @@ jobs:
           channel: 'stable'
           architecture: x64
 
-      # 1. 显示环境信息
+      # 1. 显示环境信息（确认版本兼容性）
       - name: Show environment info
         run: |
           flutter --version
           xcodebuild -version
+          pod --version
 
-      # 2. 深度清理项目
+      # 2. 深度清理项目（避免缓存干扰）
       - name: Deep clean project
         run: |
           flutter clean
-          rm -rf ios/Pods ios/Podfile.lock ios/.symlinks
-          rm -rf ~/Library/Developer/Xcode/DerivedData/*
+          rm -rf ios/Pods ios/Podfile.lock ios/.symlinks ~/.pub-cache
+          rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Caches/CocoaPods
 
-      # 3. 安装Flutter依赖
+      # 3. 安装Flutter依赖（确保拉取最新插件）
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      # 4. 生成标准Podfile
-      - name: Generate standard Podfile
+      # 4. 关键修复1：抑制OpenGLES废弃警告（通过Xcode配置）
+      - name: Suppress GLES deprecation warnings
         run: |
           cd ios
+          # 1. 安装xcodeproj工具（用于修改Xcode项目配置）
+          sudo gem install xcodeproj --no-document
+          
+          # 2. 使用Ruby脚本添加编译标志，抑制OpenGLES废弃警告
+          ruby -e '
+            require "xcodeproj"
+            project = Xcodeproj::Project.open("Runner.xcodeproj")
+            target = project.targets.find { |t| t.name == "Runner" }
+            
+            # 为所有构建配置添加 GLES_SILENCE_DEPRECATION 标志
+            target.build_configurations.each do |config|
+              # 抑制OpenGLES废弃警告
+              config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
+              config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+              # 抑制Objective-C废弃警告（若插件包含OC代码）
+              config.build_settings["OTHER_CFLAGS"] ||= []
+              config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+              # 确保禁用签名（避免之前的团队配置问题）
+              config.build_settings["DEVELOPMENT_TEAM"] = ""
+              config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
+              config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
+            end
+            
+            # 额外：为Pods项目也添加抑制警告（若插件内部未处理）
+            pods_project = Xcodeproj::Project.open("Pods/Pods.xcodeproj")
+            pods_project.targets.each do |pod_target|
+              next unless pod_target.name.include?("media_kit_video") # 仅针对问题插件
+              pod_target.build_configurations.each do |config|
+                config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
+                config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+                config.build_settings["OTHER_CFLAGS"] ||= []
+                config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+              end
+            end
+            
+            project.save
+            pods_project.save
+          '
+          echo "✅ Added GLES_SILENCE_DEPRECATION flag to suppress warnings"
+
+      # 5. 生成标准Podfile并安装依赖
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios
+          # 生成标准Podfile（若缺失）
           if [ ! -f "Podfile" ]; then
             cat > Podfile <<EOF
           platform :ios, '11.0'
           ENV['COCOAPODS_DISABLE_STATS'] = 'true'
-
-          project 'Runner', {
-            'Debug' => :debug,
-            'Profile' => :release,
-            'Release' => :release,
-          }
+          project 'Runner', { 'Debug' => :debug, 'Profile' => :release, 'Release' => :release }
 
           def flutter_root
             generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
             unless File.exist?(generated_xcode_build_settings_path)
               raise "#{generated_xcode_build_settings_path} must exist. Run 'flutter pub get' first."
             end
-
             File.foreach(generated_xcode_build_settings_path) do |line|
               matches = line.match(/FLUTTER_ROOT\=(.*)/)
               return matches[1].strip if matches
             end
-            raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}"
+            raise "FLUTTER_ROOT not found"
           end
 
           require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
-
           target 'Runner' do
             use_frameworks!
             use_modular_headers!
@@ -73,51 +112,37 @@ jobs:
           post_install do |installer|
             installer.pods_project.targets.each do |target|
               flutter_additional_ios_build_settings(target)
+              # 关键修复2：为media_kit_video插件单独添加抑制警告
+              if target.name.include?("media_kit_video")
+                target.build_configurations.each do |config|
+                  config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
+                  config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+                end
+              end
             end
           end
           EOF
           fi
-
-      # 5. 关键修复：配置Xcode开发团队和签名设置
-      - name: Configure Xcode signing settings
-        run: |
-          cd ios
-          # 安装xcodeproj gem工具（用于修改Xcode项目配置）
-          sudo gem install xcodeproj
           
-          # 使用Ruby脚本修改Runner.xcodeproj配置
-          ruby -e '
-            require "xcodeproj"
-            project = Xcodeproj::Project.open("Runner.xcodeproj")
-            target = project.targets.find { |t| t.name == "Runner" }
-            
-            # 设置开发团队（使用占位符，无需实际账号）
-            target.build_configurations.each do |config|
-              config.build_settings["DEVELOPMENT_TEAM"] = ""
-              config.build_settings["CODE_SIGN_IDENTITY"] = ""
-              config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
-              config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
-              config.build_settings["EXPANDED_CODE_SIGN_IDENTITY"] = ""
-            end
-            
-            project.save
-          '
-          echo "✅ Updated Xcode signing configurations"
-
-      # 6. 安装CocoaPods依赖
-      - name: Install CocoaPods dependencies
-        run: |
-          cd ios
-          pod repo update
+          # 安装Pod依赖
+          pod repo update --verbose
           pod install --verbose
 
-      # 7. 构建iOS版本（添加--no-tree-shake-icons避免额外错误）
+      # 6. 构建iOS版本（禁用图标优化，避免额外错误）
       - name: Build iOS Release
         run: |
           flutter build ios --release --no-codesign --verbose \
-            --no-tree-shake-icons
+            --no-tree-shake-icons  # 避免图标处理步骤的潜在错误
+          
+          # 验证构建产物
+          if [ -d "build/ios/iphoneos/Runner.app" ]; then
+            echo "✅ Build succeeded!"
+          else
+            echo "❌ Build failed! Check logs for details."
+            exit 1
+          fi
 
-      # 8. 打包IPA
+      # 7. 打包IPA
       - name: Package IPA
         run: |
           BUILD_PATH="build/ios/iphoneos"
@@ -126,10 +151,12 @@ jobs:
           cd "$BUILD_PATH"
           zip -qq -r -9 FlutterIpaExport.ipa Payload
 
-      # 9. 上传产物
-      - name: Upload IPA to artifacts
+      # 8. 上传产物（含日志便于排查）
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: flutter-ios-ipa
-          path: build/ios/iphoneos/FlutterIpaExport.ipa
+          path: |
+            build/ios/iphoneos/FlutterIpaExport.ipa
+            ios/Podfile.lock
           retention-days: 30
