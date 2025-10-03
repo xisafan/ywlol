@@ -5,7 +5,7 @@ on:
 
 jobs:
   build-ios:
-    name: 🎉 iOS Build (Unsigned IPA)
+    name: 📦 iOS Build (Unsigned IPA)
     runs-on: macos-latest
 
     steps:
@@ -30,85 +30,42 @@ jobs:
           rm -rf ios/Pods ios/Podfile.lock ios/.symlinks
           rm -rf ~/Library/Developer/Xcode/DerivedData/*
 
-      - name: Install Flutter dependencies
+      - name: Install dependencies
         run: flutter pub get
 
-      # 🔑 修改 Runner.xcodeproj 的最低 iOS 版本为 13.0
-      - name: Force Runner project to iOS 13.0
+      - name: iOS Pod install
         run: |
           cd ios
-          sudo gem install xcodeproj --no-document
-          ruby -e '
-            require "xcodeproj"
-            project = Xcodeproj::Project.open("Runner.xcodeproj")
-            project.build_configurations.each { |c| c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0" }
-            project.targets.each { |t| t.build_configurations.each { |c| c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "13.0" } }
-            project.save
-            puts "✅ Runner.xcodeproj updated to iOS 13.0"
-          '
-
-      # 🔑 强制 Pods 全部改成 iOS 13.0
-      - name: Force all Pods to iOS 13.0
-        run: |
-          cd ios
-          # 修改 Podfile
-          if ! grep -q "platform :ios" Podfile; then
-            echo "platform :ios, '13.0'" > Podfile.tmp
-            cat Podfile >> Podfile.tmp
-            mv Podfile.tmp Podfile
-          fi
-          sed -i '' "s/platform :ios, *'[^']*'/platform :ios, '13.0'/" Podfile
-
-          # 替换所有 podspec 里的低版本
-          find Pods -name '*.podspec.json' -o -name '*.podspec' | while read spec; do
-            sed -i '' 's/ios.*9.0/ios, "13.0"/g' "$spec" || true
-            sed -i '' 's/ios.*10.0/ios, "13.0"/g' "$spec" || true
-            sed -i '' 's/ios.*11.0/ios, "13.0"/g' "$spec" || true
-            sed -i '' 's/ios.*12.0/ios, "13.0"/g' "$spec" || true
-          done
-
           pod install --repo-update
 
-      # 🔑 构建 iOS 未签名包，并保存日志
-      - name: Build iOS (unsigned)
+      - name: Build iOS Archive
         run: |
           cd ios
-          set -o pipefail && xcodebuild build \
-            -workspace Runner.xcworkspace \
+          xcodebuild -workspace Runner.xcworkspace \
             -scheme Runner \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            | tee xcode_build.log | xcpretty || true
-        continue-on-error: true
+            -archivePath ../build/Runner.xcarchive \
+            clean archive \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
 
-      - name: Upload Xcode build log
-        uses: actions/upload-artifact@v4
-        with:
-          name: xcode-build-log
-          path: ios/xcode_build.log
-
-      # 🔑 打包 IPA
-      - name: Package IPA
-        if: success()
+      - name: Export IPA
         run: |
-          APP_PATH="ios/build/DerivedData/Build/Products/Release-iphoneos/Runner.app"
-          if [ ! -d "$APP_PATH" ]; then
-            echo "❌ Runner.app not found at $APP_PATH"
-            exit 1
-          fi
-          IPA_DIR="ios/build/ipa"
-          mkdir -p "$IPA_DIR/Payload"
-          cp -r "$APP_PATH" "$IPA_DIR/Payload/"
-          cd "$IPA_DIR"
-          zip -r FlutterApp.ipa Payload
-          echo "✅ IPA generated: $(pwd)/FlutterApp.ipa"
+          xcodebuild -exportArchive \
+            -archivePath build/Runner.xcarchive \
+            -exportOptionsPlist ios/ExportOptions.plist \
+            -exportPath build/output \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+          ls -lh build/output
 
       - name: Upload IPA
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: flutter-ios-ipa
-          path: ios/build/ipa/FlutterApp.ipa
+          path: build/output/*.ipa
           retention-days: 30
