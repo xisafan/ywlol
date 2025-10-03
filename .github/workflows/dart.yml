@@ -17,73 +17,28 @@ jobs:
           channel: 'stable'
           architecture: x64
 
-      # 1. 显示环境信息（确认版本兼容性）
+      # 1. 显示环境信息
       - name: Show environment info
         run: |
           flutter --version
           xcodebuild -version
           pod --version
 
-      # 2. 深度清理项目（避免缓存干扰）
+      # 2. 深度清理项目
       - name: Deep clean project
         run: |
           flutter clean
           rm -rf ios/Pods ios/Podfile.lock ios/.symlinks ~/.pub-cache
           rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Caches/CocoaPods
 
-      # 3. 安装Flutter依赖（确保拉取最新插件）
+      # 3. 安装Flutter依赖
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      # 4. 关键修复1：抑制OpenGLES废弃警告（通过Xcode配置）
-      - name: Suppress GLES deprecation warnings
+      # 4. 生成标准Podfile（确保Podfile存在，为pod install做准备）
+      - name: Generate standard Podfile
         run: |
           cd ios
-          # 1. 安装xcodeproj工具（用于修改Xcode项目配置）
-          sudo gem install xcodeproj --no-document
-          
-          # 2. 使用Ruby脚本添加编译标志，抑制OpenGLES废弃警告
-          ruby -e '
-            require "xcodeproj"
-            project = Xcodeproj::Project.open("Runner.xcodeproj")
-            target = project.targets.find { |t| t.name == "Runner" }
-            
-            # 为所有构建配置添加 GLES_SILENCE_DEPRECATION 标志
-            target.build_configurations.each do |config|
-              # 抑制OpenGLES废弃警告
-              config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
-              config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
-              # 抑制Objective-C废弃警告（若插件包含OC代码）
-              config.build_settings["OTHER_CFLAGS"] ||= []
-              config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
-              # 确保禁用签名（避免之前的团队配置问题）
-              config.build_settings["DEVELOPMENT_TEAM"] = ""
-              config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
-              config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
-            end
-            
-            # 额外：为Pods项目也添加抑制警告（若插件内部未处理）
-            pods_project = Xcodeproj::Project.open("Pods/Pods.xcodeproj")
-            pods_project.targets.each do |pod_target|
-              next unless pod_target.name.include?("media_kit_video") # 仅针对问题插件
-              pod_target.build_configurations.each do |config|
-                config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
-                config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
-                config.build_settings["OTHER_CFLAGS"] ||= []
-                config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
-              end
-            end
-            
-            project.save
-            pods_project.save
-          '
-          echo "✅ Added GLES_SILENCE_DEPRECATION flag to suppress warnings"
-
-      # 5. 生成标准Podfile并安装依赖
-      - name: Install CocoaPods dependencies
-        run: |
-          cd ios
-          # 生成标准Podfile（若缺失）
           if [ ! -f "Podfile" ]; then
             cat > Podfile <<EOF
           platform :ios, '11.0'
@@ -112,37 +67,96 @@ jobs:
           post_install do |installer|
             installer.pods_project.targets.each do |target|
               flutter_additional_ios_build_settings(target)
-              # 关键修复2：为media_kit_video插件单独添加抑制警告
-              if target.name.include?("media_kit_video")
-                target.build_configurations.each do |config|
-                  config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
-                  config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
-                end
-              end
             end
           end
           EOF
           fi
-          
-          # 安装Pod依赖
+
+      # 5. 先执行pod install（生成Pods.xcodeproj等文件）
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios
           pod repo update --verbose
           pod install --verbose
-
-      # 6. 构建iOS版本（禁用图标优化，避免额外错误）
-      - name: Build iOS Release
-        run: |
-          flutter build ios --release --no-codesign --verbose \
-            --no-tree-shake-icons  # 避免图标处理步骤的潜在错误
-          
-          # 验证构建产物
-          if [ -d "build/ios/iphoneos/Runner.app" ]; then
-            echo "✅ Build succeeded!"
+          # 验证Pods.xcodeproj是否生成
+          if [ -f "Pods/Pods.xcodeproj" ]; then
+            echo "✅ Pods.xcodeproj generated successfully"
           else
-            echo "❌ Build failed! Check logs for details."
+            echo "❌ Pods.xcodeproj not found! pod install failed."
             exit 1
           fi
 
-      # 7. 打包IPA
+      # 6. 关键修复：修改Xcode配置（Runner + Pods，此时Pods文件已存在）
+      - name: Configure Xcode (suppress GLES warnings + disable signing)
+        run: |
+          cd ios
+          # 安装xcodeproj工具
+          sudo gem install xcodeproj --no-document
+          
+          # Ruby脚本：先修改Runner项目，再修改Pods项目
+          ruby -e '
+            require "xcodeproj"
+
+            #######################################
+            # 1. 修改Runner项目：抑制警告 + 禁用签名
+            #######################################
+            runner_project = Xcodeproj::Project.open("Runner.xcodeproj")
+            runner_target = runner_project.targets.find { |t| t.name == "Runner" }
+            
+            runner_target.build_configurations.each do |config|
+              # 抑制OpenGLES废弃警告（Swift + Objective-C）
+              config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
+              config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+              config.build_settings["OTHER_CFLAGS"] ||= []
+              config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+              # 禁用签名（避免开发团队配置问题）
+              config.build_settings["DEVELOPMENT_TEAM"] = ""
+              config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
+              config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
+            end
+            runner_project.save
+            puts "✅ Updated Runner project configuration"
+
+            #######################################
+            # 2. 修改Pods项目：为media_kit_video抑制警告
+            #######################################
+            pods_project_path = "Pods/Pods.xcodeproj"
+            if File.exist?(pods_project_path)
+              pods_project = Xcodeproj::Project.open(pods_project_path)
+              # 仅针对media_kit_video插件添加抑制警告
+              pods_project.targets.each do |pod_target|
+                next unless pod_target.name.include?("media_kit_video")
+                
+                pod_target.build_configurations.each do |config|
+                  config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
+                  config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+                  config.build_settings["OTHER_CFLAGS"] ||= []
+                  config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+                end
+                puts "✅ Updated media_kit_video pod configuration"
+              end
+              pods_project.save
+            else
+              puts "❌ Pods.xcodeproj not found (this should not happen after pod install)"
+              exit 1
+            end
+          '
+
+      # 7. 构建iOS版本（禁用图标优化，减少额外错误）
+      - name: Build iOS Release
+        run: |
+          flutter build ios --release --no-codesign --verbose \
+            --no-tree-shake-icons
+          
+          # 验证构建产物
+          if [ -d "build/ios/iphoneos/Runner.app" ]; then
+            echo "✅ Build succeeded! App path: build/ios/iphoneos/Runner.app"
+          else
+            echo "❌ Build failed - Runner.app not found"
+            exit 1
+          fi
+
+      # 8. 打包IPA
       - name: Package IPA
         run: |
           BUILD_PATH="build/ios/iphoneos"
@@ -150,13 +164,19 @@ jobs:
           mv "$BUILD_PATH/Runner.app" "$BUILD_PATH/Payload/"
           cd "$BUILD_PATH"
           zip -qq -r -9 FlutterIpaExport.ipa Payload
+          
+          # 验证IPA生成
+          if [ -f "FlutterIpaExport.ipa" ]; then
+            echo "✅ IPA generated: $(du -sh FlutterIpaExport.ipa)"
+          else
+            echo "❌ IPA generation failed"
+            exit 1
+          fi
 
-      # 8. 上传产物（含日志便于排查）
-      - name: Upload artifacts
+      # 9. 上传产物
+      - name: Upload IPA to artifacts
         uses: actions/upload-artifact@v4
         with:
           name: flutter-ios-ipa
-          path: |
-            build/ios/iphoneos/FlutterIpaExport.ipa
-            ios/Podfile.lock
+          path: build/ios/iphoneos/FlutterIpaExport.ipa
           retention-days: 30
