@@ -72,41 +72,43 @@ jobs:
           EOF
           fi
 
-      # 5. 执行pod install + 修复路径检查（核心修复）
-      - name: Install CocoaPods dependencies (fix path check)
+      # 5. 执行pod install + 修复Pods.xcodeproj检查（核心：判断目录而非文件）
+      - name: Install CocoaPods dependencies (fix directory check)
         run: |
-          # 进入ios目录并保持在此目录执行后续命令（避免路径混乱）
           cd ios
           
-          # 执行pod install（保留详细日志）
+          # 执行pod install
           pod repo update --verbose
           pod install --verbose
           
-          # 关键修复1：明确Pods.xcodeproj的绝对路径，避免相对路径歧义
+          # 关键修复：Pods.xcodeproj是目录，用 -d 检查（而非 -f 检查文件）
           PODS_PROJECT_PATH="$PWD/Pods/Pods.xcodeproj"
+          echo "Checking if $PODS_PROJECT_PATH (directory) exists..."
           
-          # 关键修复2：添加延迟+重试检查（应对文件生成延迟）
-          echo "Checking if $PODS_PROJECT_PATH exists..."
           RETRY_COUNT=0
           MAX_RETRIES=3
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            if [ -f "$PODS_PROJECT_PATH" ]; then
-              echo "✅ Pods.xcodeproj found at: $PODS_PROJECT_PATH"
+            # 用 -d 判断是否为目录（正确方式）
+            if [ -d "$PODS_PROJECT_PATH" ]; then
+              echo "✅ Pods.xcodeproj directory found at: $PODS_PROJECT_PATH"
+              # 额外验证目录内关键文件（确保目录有效）
+              if [ -f "$PODS_PROJECT_PATH/project.pbxproj" ]; then
+                echo "✅ Pods.xcodeproj is valid (contains project.pbxproj)"
+              else
+                echo "❌ Pods.xcodeproj is empty (missing project.pbxproj)!"
+                exit 1
+              fi
               break
             else
-              echo "⚠️ Retry $((RETRY_COUNT+1)): Pods.xcodeproj not found yet. Waiting 2 seconds..."
+              echo "⚠️ Retry $((RETRY_COUNT+1)): Pods.xcodeproj directory not found. Waiting 2 seconds..."
               sleep 2
               RETRY_COUNT=$((RETRY_COUNT+1))
             fi
           done
           
-          # 最终检查：若多次重试仍未找到，才判定失败
-          if [ ! -f "$PODS_PROJECT_PATH" ]; then
-            echo "❌ Pods.xcodeproj not found after $MAX_RETRIES retries!"
-            # 输出目录结构供排查
-            echo "Current directory: $PWD"
-            echo "Directory contents:"
-            ls -la
+          # 最终检查
+          if [ ! -d "$PODS_PROJECT_PATH" ]; then
+            echo "❌ Pods.xcodeproj directory not found after $MAX_RETRIES retries!"
             echo "Pods directory contents:"
             ls -la Pods/
             exit 1
@@ -116,64 +118,49 @@ jobs:
       - name: Configure Xcode (suppress warnings + disable signing)
         run: |
           cd ios
-          # 安装xcodeproj工具
           sudo gem install xcodeproj --no-document
           
-          # Ruby脚本：修改Runner和Pods项目
+          # Ruby脚本：修改Runner和Pods项目（确保路径正确）
           ruby -e '
             require "xcodeproj"
-            require "fileutils"
 
             #######################################
             # 1. 修改Runner项目
             #######################################
-            runner_project_path = "Runner.xcodeproj"
-            if File.exist?(runner_project_path)
-              runner_project = Xcodeproj::Project.open(runner_project_path)
-              runner_target = runner_project.targets.find { |t| t.name == "Runner" }
-              
-              runner_target.build_configurations.each do |config|
-                # 抑制OpenGLES废弃警告
-                config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
-                config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
-                config.build_settings["OTHER_CFLAGS"] ||= []
-                config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
-                # 禁用签名
-                config.build_settings["DEVELOPMENT_TEAM"] = ""
-                config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
-                config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
-              end
-              
-              runner_project.save
-              puts "✅ Updated Runner project"
-            else
-              puts "❌ Runner.xcodeproj not found!"
-              exit 1
+            runner_project = Xcodeproj::Project.open("Runner.xcodeproj")
+            runner_target = runner_project.targets.find { |t| t.name == "Runner" }
+            
+            runner_target.build_configurations.each do |config|
+              # 抑制OpenGLES警告
+              config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
+              config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+              config.build_settings["OTHER_CFLAGS"] ||= []
+              config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+              # 禁用签名
+              config.build_settings["DEVELOPMENT_TEAM"] = ""
+              config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
+              config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
             end
+            runner_project.save
+            puts "✅ Updated Runner project"
 
             #######################################
             # 2. 修改Pods项目（针对media_kit_video）
             #######################################
-            pods_project_path = "Pods/Pods.xcodeproj"
-            if File.exist?(pods_project_path)
-              pods_project = Xcodeproj::Project.open(pods_project_path)
-              pods_project.targets.each do |pod_target|
-                next unless pod_target.name.include?("media_kit_video")
-                
-                pod_target.build_configurations.each do |config|
-                  config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
-                  config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
-                  config.build_settings["OTHER_CFLAGS"] ||= []
-                  config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
-                end
-                puts "✅ Updated media_kit_video pod"
-              end
+            pods_project = Xcodeproj::Project.open("Pods/Pods.xcodeproj")
+            pods_project.targets.each do |pod_target|
+              next unless pod_target.name.include?("media_kit_video")
               
-              pods_project.save
-            else
-              puts "❌ Pods.xcodeproj not found (this should not happen after pod install)"
-              exit 1
+              pod_target.build_configurations.each do |config|
+                config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
+                config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+                config.build_settings["OTHER_CFLAGS"] ||= []
+                config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+              end
+              puts "✅ Updated media_kit_video pod"
             end
+            pods_project.save
+            puts "✅ Updated Pods project"
           '
 
       # 7. 构建iOS版本
@@ -185,9 +172,10 @@ jobs:
           # 验证构建产物
           APP_PATH="build/ios/iphoneos/Runner.app"
           if [ -d "$APP_PATH" ]; then
-            echo "✅ Build succeeded! App size: $(du -sh "$APP_PATH")"
+            echo "✅ Build succeeded! App path: $APP_PATH"
+            echo "App size: $(du -sh "$APP_PATH")"
           else
-            echo "❌ Build failed - Runner.app not found at $APP_PATH"
+            echo "❌ Build failed - Runner.app not found"
             exit 1
           fi
 
