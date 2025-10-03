@@ -31,7 +31,10 @@ jobs:
           rm -rf ~/Library/Developer/Xcode/DerivedData/*
 
       # 🔑 使用锁定的依赖版本
-      - name: Install Flutter dependencies (locked)
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Verify lockfile
         run: flutter pub get --enforce-lockfile
 
       # 🔑 修改 Podfile 里的最低版本 & 安装 Pods
