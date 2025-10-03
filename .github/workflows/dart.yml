@@ -32,26 +32,25 @@ jobs:
           rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Caches/CocoaPods
           rm -rf ios/Flutter/Flutter.podspec
 
-      # 3. 关键修复：配置CocoaPods仓库（添加trunk并使用国内镜像）
-      - name: Configure CocoaPods repositories
+      # 3. 关键修复：配置CocoaPods使用国内CDN镜像（避免trunk命名冲突）
+      - name: Configure CocoaPods with TUNA CDN mirror
         run: |
-          # 移除可能损坏的仓库配置
-          pod repo remove trunk || true
-          
-          # 添加国内镜像的trunk仓库（解决官方源访问问题）
-          echo "Adding CocoaPods trunk repo from TUNA mirror..."
-          pod repo add trunk https://mirrors.tuna.tsinghua.edu.cn/git/CocoaPods/Specs.git
-          
-          # 验证仓库是否添加成功
-          if pod repo list | grep -q "trunk"; then
-            echo "✅ Trunk repo added successfully"
-          else
-            echo "❌ Failed to add trunk repo"
-            exit 1
+          # 备份并修改CocoaPods配置文件，使用国内CDN
+          if [ -f ~/.cocoapods/config.yaml ]; then
+            cp ~/.cocoapods/config.yaml ~/.cocoapods/config.yaml.bak
           fi
           
-          # 强制更新仓库索引
-          pod repo update trunk --verbose
+          # 配置使用清华大学CDN镜像（替代官方trunk CDN）
+          echo "---
+          cdn_url: 'https://mirrors.tuna.tsinghua.edu.cn/git/CocoaPods/Specs.git'
+          " > ~/.cocoapods/config.yaml
+          
+          # 验证配置是否生效
+          echo "CocoaPods config:"
+          cat ~/.cocoapods/config.yaml
+          
+          # 清理旧的仓库缓存
+          rm -rf ~/.cocoapods/repos/*
 
       # 4. 同步Flutter项目的iOS最低版本
       - name: Sync Flutter iOS deployment target
@@ -102,7 +101,7 @@ jobs:
             exit 1
           fi
 
-      # 6. 生成兼容的Podfile
+      # 6. 生成兼容的Podfile（使用CDN源）
       - name: Generate compatible Podfile
         run: |
           cd ios
@@ -110,7 +109,7 @@ jobs:
           platform :ios, '12.0'
           ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
-          # 使用国内镜像源加速依赖拉取
+          # 使用CDN源（与全局配置一致）
           source 'https://mirrors.tuna.tsinghua.edu.cn/git/CocoaPods/Specs.git'
 
           project 'Runner', {
@@ -156,14 +155,14 @@ jobs:
           EOF
           echo "✅ Podfile generated"
 
-      # 7. 安装CocoaPods依赖
+      # 7. 安装CocoaPods依赖（使用CDN源）
       - name: Install CocoaPods dependencies
         run: |
           cd ios
           export IPHONEOS_DEPLOYMENT_TARGET=12.0
           
-          # 使用国内源安装依赖，避免官方源访问问题
-          pod install --verbose --no-repo-update
+          # 直接安装，依赖CDN配置获取仓库信息
+          pod install --verbose
           
           # 验证bonsoir_darwin安装
           if [ -d "Pods/bonsoir_darwin" ]; then
