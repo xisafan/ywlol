@@ -17,12 +17,13 @@ jobs:
           channel: 'stable'
           architecture: x64
 
-      # 1. 显示环境信息
+      # 1. 显示环境信息（确认Flutter根目录）
       - name: Show environment info
         run: |
           flutter --version
           xcodebuild -version
           pod --version
+          echo "Flutter root path: $(flutter root)"  # 验证Flutter根目录是否正确
 
       # 2. 深度清理项目
       - name: Deep clean project
@@ -32,125 +33,121 @@ jobs:
           rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Caches/CocoaPods
           rm -rf ios/Flutter/Flutter.podspec
 
-      # 3. 关键修复：初始化并配置CocoaPods国内CDN镜像
+      # 3. 配置CocoaPods国内CDN镜像（修复config.yaml不存在问题）
       - name: Configure CocoaPods with TUNA CDN mirror
         run: |
-          # 确保CocoaPods配置目录存在
-          mkdir -p ~/.cocoapods
-          
-          # 初始化配置文件（如果不存在）
+          mkdir -p ~/.cocoapods  # 确保配置目录存在
+          # 初始化/备份配置文件
           if [ ! -f ~/.cocoapods/config.yaml ]; then
             echo "---" > ~/.cocoapods/config.yaml
-            echo "Initializing new CocoaPods config file"
+            echo "Initializing CocoaPods config"
           else
-            # 备份现有配置
             cp ~/.cocoapods/config.yaml ~/.cocoapods/config.yaml.bak
-            echo "Backed up existing CocoaPods config"
+            echo "Backed up CocoaPods config"
           fi
-          
-          # 使用sed修改配置文件，设置国内CDN镜像
-          # 先删除现有cdn_url配置（如果存在）
+          # 设置国内CDN
           sed -i '' '/cdn_url:/d' ~/.cocoapods/config.yaml
-          # 添加清华大学CDN镜像
           echo "cdn_url: 'https://mirrors.tuna.tsinghua.edu.cn/git/CocoaPods/Specs.git'" >> ~/.cocoapods/config.yaml
-          
-          # 验证配置是否生效
           echo "Final CocoaPods config:"
           cat ~/.cocoapods/config.yaml
-          
-          # 清理旧的仓库缓存
+          # 清理旧缓存
           rm -rf ~/.cocoapods/repos/*
 
       # 4. 同步Flutter项目的iOS最低版本
       - name: Sync Flutter iOS deployment target
         run: |
-          # 修改Flutter全局配置文件
+          # 修改Flutter全局配置
           FLUTTER_XCCONFIG="ios/Flutter/Generated.xcconfig"
           if [ -f "$FLUTTER_XCCONFIG" ]; then
             sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET=.*/IPHONEOS_DEPLOYMENT_TARGET=12.0/' "$FLUTTER_XCCONFIG"
-            echo "✅ Updated $FLUTTER_XCCONFIG: IPHONEOS_DEPLOYMENT_TARGET=12.0"
+            echo "✅ Updated $FLUTTER_XCCONFIG to iOS 12.0"
           else
             mkdir -p ios/Flutter
             echo "IPHONEOS_DEPLOYMENT_TARGET=12.0" > "$FLUTTER_XCCONFIG"
             echo "FLUTTER_ROOT=$(flutter root)" >> "$FLUTTER_XCCONFIG"
-            echo "✅ Created $FLUTTER_XCCONFIG with iOS 12.0 target"
+            echo "✅ Created $FLUTTER_XCCONFIG"
           fi
 
-          # 修改Runner.xcodeproj项目级配置
+          # 修改Runner.xcodeproj
           cd ios
           sudo gem install xcodeproj --no-document
           ruby -e '
             require "xcodeproj"
             project = Xcodeproj::Project.open("Runner.xcodeproj")
-            # 更新项目级部署目标
-            project.build_configurations.each do |config|
-              config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "12.0"
-            end
-            # 更新所有target
-            project.targets.each do |target|
-              target.build_configurations.each do |config|
-                config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "12.0"
-              end
-            end
+            # 项目级部署目标
+            project.build_configurations.each { |c| c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "12.0" }
+            # 所有target部署目标
+            project.targets.each { |t| t.build_configurations.each { |c| c.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "12.0" } }
             project.save
             puts "✅ Updated Runner.xcodeproj to iOS 12.0"
           '
 
-      # 5. 安装Flutter依赖
+      # 5. 安装Flutter依赖（生成正确的Flutter配置）
       - name: Install Flutter dependencies
         run: |
           export IPHONEOS_DEPLOYMENT_TARGET=12.0
           flutter pub get
+          # 验证Generated.xcconfig是否生成
+          if [ ! -f "ios/Flutter/Generated.xcconfig" ]; then
+            echo "❌ Generated.xcconfig missing! Flutter pub get failed"
+            exit 1
+          fi
           # 验证bonsoir_darwin依赖
           if grep -q "bonsoir_darwin" pubspec.lock; then
             echo "✅ bonsoir_darwin found in pubspec.lock"
           else
-            echo "❌ bonsoir_darwin missing in pubspec.lock"
+            echo "❌ bonsoir_darwin missing"
             cat pubspec.lock
             exit 1
           fi
 
-      # 6. 生成兼容的Podfile（使用CDN源）
-      - name: Generate compatible Podfile
+      # 6. 关键修复：生成路径正确的Podfile（修复podhelper.rb路径）
+      - name: Generate Podfile with correct podhelper path
         run: |
           cd ios
+          # 获取正确的Flutter根目录（避免路径计算错误）
+          FLUTTER_ROOT=$(flutter root)
+          echo "Using Flutter root: $FLUTTER_ROOT"
+          
           cat > Podfile <<EOF
           platform :ios, '12.0'
           ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+          source 'https://mirrors.tuna.tsinghua.edu.cn/git/CocoaPods/Specs.git'  # 国内CDN源
 
-          # 使用CDN源（与全局配置一致）
-          source 'https://mirrors.tuna.tsinghua.edu.cn/git/CocoaPods/Specs.git'
+          project 'Runner', { 'Debug' => :debug, 'Profile' => :release, 'Release' => :release }
 
-          project 'Runner', {
-            'Debug' => :debug,
-            'Profile' => :release,
-            'Release' => :release,
-          }
-
+          # 关键修复：正确计算podhelper.rb路径（基于Flutter根目录）
           def flutter_root
-            generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
-            unless File.exist?(generated_xcode_build_settings_path)
-              raise "#{generated_xcode_build_settings_path} must exist. Run 'flutter pub get' first."
+            # 从Generated.xcconfig读取Flutter根目录（更可靠）
+            generated_xcconfig = File.expand_path('../Flutter/Generated.xcconfig', __FILE__)
+            unless File.exist?(generated_xcconfig)
+              raise "Generated.xcconfig not found! Run 'flutter pub get' first."
             end
-            File.foreach(generated_xcode_build_settings_path) do |line|
-              matches = line.match(/FLUTTER_ROOT\=(.*)/)
-              return matches[1].strip if matches
+            File.foreach(generated_xcconfig) do |line|
+              match = line.match(/FLUTTER_ROOT\=(.*)/)
+              return match[1].strip if match
             end
-            raise "FLUTTER_ROOT not found"
+            raise "FLUTTER_ROOT not found in Generated.xcconfig"
           end
 
-          require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+          # 关键修复：正确引入podhelper.rb（路径基于flutter_root，而非当前目录）
+          podhelper_path = File.join(flutter_root, 'packages', 'flutter_tools', 'bin', 'podhelper.rb')
+          unless File.exist?(podhelper_path)
+            raise "podhelper.rb not found at #{podhelper_path}! Check Flutter installation."
+          end
+          require podhelper_path
 
           target 'Runner' do
             use_frameworks!
             use_modular_headers!
+            # 安装Flutter插件依赖（依赖podhelper.rb）
             flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
           end
 
           post_install do |installer|
             installer.pods_project.targets.each do |target|
               flutter_additional_ios_build_settings(target)
-              # 统一插件版本和签名配置
+              # 统一插件配置
               target.build_configurations.each do |config|
                 config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "12.0"
                 config.build_settings["DEVELOPMENT_TEAM"] = ""
@@ -162,18 +159,31 @@ jobs:
             end
           end
           EOF
-          echo "✅ Podfile generated"
+          echo "✅ Podfile generated with correct podhelper path"
+          # 验证podhelper.rb路径是否存在
+          PODHELPER_PATH=$(ruby -e '
+            require "fileutils"
+            generated_xcconfig = File.expand_path("../Flutter/Generated.xcconfig", __FILE__)
+            flutter_root = File.foreach(generated_xcconfig).find { |l| l.match(/FLUTTER_ROOT/) }.match(/FLUTTER_ROOT\=(.*)/)[1].strip
+            puts File.join(flutter_root, "packages", "flutter_tools", "bin", "podhelper.rb")
+          ')
+          if [ -f "$PODHELPER_PATH" ]; then
+            echo "✅ podhelper.rb found at: $PODHELPER_PATH"
+          else
+            echo "❌ podhelper.rb missing at: $PODHELPER_PATH"
+            exit 1
+          fi
 
-      # 7. 安装CocoaPods依赖（使用CDN源）
+      # 7. 安装CocoaPods依赖（路径已修复）
       - name: Install CocoaPods dependencies
         run: |
           cd ios
           export IPHONEOS_DEPLOYMENT_TARGET=12.0
-          
-          # 直接安装，依赖CDN配置获取仓库信息
+          # 验证Podfile语法
+          pod lint --allow-warnings Podfile
+          # 执行安装
           pod install --verbose
-          
-          # 验证bonsoir_darwin安装
+          # 验证依赖安装
           if [ -d "Pods/bonsoir_darwin" ]; then
             echo "✅ bonsoir_darwin pod installed"
           else
@@ -206,16 +216,14 @@ jobs:
         run: |
           APP_PATH="ios/build/Products/Release-iphoneos/Runner.app"
           if [ ! -d "$APP_PATH" ]; then
-            echo "❌ Runner.app not found"
+            echo "❌ Runner.app not found at $APP_PATH"
             exit 1
           fi
-          
           IPA_DIR="ios/build/ipa"
           mkdir -p "$IPA_DIR/Payload"
           mv "$APP_PATH" "$IPA_DIR/Payload/"
           cd "$IPA_DIR"
           zip -qq -r -9 FlutterIpaExport.ipa Payload
-          
           if [ -f "FlutterIpaExport.ipa" ]; then
             echo "✅ IPA generated! Size: $(du -sh FlutterIpaExport.ipa)"
             cp FlutterIpaExport.ipa ../../build/ios/iphoneos/
@@ -231,4 +239,3 @@ jobs:
           name: flutter-ios-ipa
           path: ios/build/ios/iphoneos/FlutterIpaExport.ipa
           retention-days: 30
-    
