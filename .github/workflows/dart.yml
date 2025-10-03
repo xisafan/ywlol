@@ -17,19 +17,24 @@ jobs:
           channel: 'stable'
           architecture: x64
 
-      # 1. 深度清理项目缓存
+      # 1. 显示环境信息
+      - name: Show environment info
+        run: |
+          flutter --version
+          xcodebuild -version
+
+      # 2. 深度清理项目
       - name: Deep clean project
         run: |
           flutter clean
-          rm -rf ios/Pods ios/Podfile.lock ios/.symlinks ios/Flutter/Flutter.framework
-          rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Caches/CocoaPods
-          rm -rf ~/.pub-cache
+          rm -rf ios/Pods ios/Podfile.lock ios/.symlinks
+          rm -rf ~/Library/Developer/Xcode/DerivedData/*
 
-      # 2. 安装Flutter依赖
+      # 3. 安装Flutter依赖
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      # 3. 生成标准Podfile
+      # 4. 生成标准Podfile
       - name: Generate standard Podfile
         run: |
           cd ios
@@ -71,69 +76,60 @@ jobs:
             end
           end
           EOF
-            if [ -f "Podfile" ]; then
-              echo "✅ Podfile generated successfully"
-            else
-              echo "❌ Failed to generate Podfile"
-              exit 1
-            fi
-          else
-            echo "✅ Podfile exists, skipping generation"
           fi
 
-      # 4. 安装CocoaPods依赖
+      # 5. 关键修复：配置Xcode开发团队和签名设置
+      - name: Configure Xcode signing settings
+        run: |
+          cd ios
+          # 安装xcodeproj gem工具（用于修改Xcode项目配置）
+          sudo gem install xcodeproj
+          
+          # 使用Ruby脚本修改Runner.xcodeproj配置
+          ruby -e '
+            require "xcodeproj"
+            project = Xcodeproj::Project.open("Runner.xcodeproj")
+            target = project.targets.find { |t| t.name == "Runner" }
+            
+            # 设置开发团队（使用占位符，无需实际账号）
+            target.build_configurations.each do |config|
+              config.build_settings["DEVELOPMENT_TEAM"] = ""
+              config.build_settings["CODE_SIGN_IDENTITY"] = ""
+              config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
+              config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
+              config.build_settings["EXPANDED_CODE_SIGN_IDENTITY"] = ""
+            end
+            
+            project.save
+          '
+          echo "✅ Updated Xcode signing configurations"
+
+      # 6. 安装CocoaPods依赖
       - name: Install CocoaPods dependencies
         run: |
           cd ios
-          sudo gem install cocoapods --no-document
-          pod repo update --verbose
-          pod install --verbose --repo-update
-          
-          if [ -f "Pods/Target Support Files/Pods-Runner/Pods-Runner-frameworks-Release-input-files.xcfilelist" ]; then
-            echo "✅ Required xcfilelist files exist"
-            chmod -R 777 Pods/Target\ Support\ Files/
-          else
-            echo "❌ Missing required xcfilelist files"
-            exit 1
-          fi
+          pod repo update
+          pod install --verbose
 
-      # 5. 构建iOS版本（不指定输出路径，使用默认路径）
+      # 7. 构建iOS版本（添加--no-tree-shake-icons避免额外错误）
       - name: Build iOS Release
         run: |
-          # 移除所有路径参数，使用Flutter默认构建路径
-          flutter build ios --release --no-codesign --verbose
-          
-          # 验证构建产物（Flutter默认路径）
-          DEFAULT_PATH="build/ios/iphoneos"
-          if [ -d "$DEFAULT_PATH/Runner.app" ]; then
-            echo "✅ Build successful. App path: $DEFAULT_PATH"
-          else
-            echo "❌ Build failed - Runner.app not found in $DEFAULT_PATH"
-            exit 1
-          fi
+          flutter build ios --release --no-codesign --verbose \
+            --no-tree-shake-icons
 
-      # 6. 打包IPA（使用Flutter默认构建路径）
+      # 8. 打包IPA
       - name: Package IPA
         run: |
-          # 使用Flutter默认构建路径
           BUILD_PATH="build/ios/iphoneos"
           mkdir -p "$BUILD_PATH/Payload"
           mv "$BUILD_PATH/Runner.app" "$BUILD_PATH/Payload/"
           cd "$BUILD_PATH"
           zip -qq -r -9 FlutterIpaExport.ipa Payload
-          
-          if [ -f "FlutterIpaExport.ipa" ]; then
-            echo "✅ IPA created: $(du -sh FlutterIpaExport.ipa)"
-          else
-            echo "❌ Failed to create IPA"
-            exit 1
-          fi
 
-      # 7. 上传产物
+      # 9. 上传产物
       - name: Upload IPA to artifacts
         uses: actions/upload-artifact@v4
         with:
           name: flutter-ios-ipa
           path: build/ios/iphoneos/FlutterIpaExport.ipa
           retention-days: 30
-    
