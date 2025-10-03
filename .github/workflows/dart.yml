@@ -17,11 +17,16 @@ jobs:
           channel: 'stable'
           architecture: x64
           
+      - name: Clean project and dependencies
+        run: |
+          flutter clean
+          rm -rf ios/Pods ios/Podfile.lock
+          rm -rf ~/.pub-cache  # 清理 pub 缓存（可选，解决依赖冲突时用）
+      
       - name: Install Flutter dependencies
         run: flutter pub get
       
-      # 修复Xcode配置命令的语法错误，移除多余空格
-      - name: Configure Xcode project (disable code signing)
+      - name: Configure Xcode project
         run: |
           cd ios
           xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
@@ -30,17 +35,16 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
       
-      - name: Update CocoaPods repo
-        run: pod repo update
-        working-directory: ios
-      
       - name: Install iOS dependencies (CocoaPods)
-        run: pod install
+        run: |
+          pod repo update
+          pod install
         working-directory: ios
 
-      - name: Build iOS Release version (no codesign)
+      - name: Build iOS Release version
         run: flutter build ios --release --no-codesign --verbose
 
+      # 后续打包和上传步骤不变...
       - name: Create IPA directory structure
         run: mkdir -p build/ios/iphoneos/Payload
         
@@ -51,19 +55,8 @@ jobs:
         run: zip -qq -r -9 FlutterIpaExport.ipa Payload
         working-directory: build/ios/iphoneos
 
-      - name: Upload IPA to workflow artifacts
+      - name: Upload IPA to artifacts
         uses: actions/upload-artifact@v4
         with:
           name: flutter-ios-ipa
           path: build/ios/iphoneos/FlutterIpaExport.ipa
-          retention-days: 30
-
-      - name: Upload IPA to GitHub Release
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: build/ios/iphoneos/FlutterIpaExport.ipa
-          tag: v1.0
-          overwrite: true
-          body: "This is the first iOS IPA release (built via GitHub Actions)"
-    
