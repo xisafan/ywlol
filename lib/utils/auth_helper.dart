@@ -262,17 +262,9 @@ class AuthHelper {
         return;
       }
 
-      // 设置API Manager的token
+      // 🔧 修复：设置API Manager的token（即使可能过期也先设置）
       OvoApiManager().setToken(user.token!);
-
-      // 静默验证token有效性
-      final isValid = await checkAuthStatus();
-      if (!isValid) {
-        print('[AuthHelper] Token无效，清除本地登录状态');
-        await UserStore().logout();
-      } else {
-        print('[AuthHelper] 登录状态有效');
-      }
+      print('[AuthHelper] 已设置API token，将在后续刷新逻辑中处理token有效性');
     } catch (e) {
       print('[AuthHelper] 初始化认证检查异常: $e');
     }

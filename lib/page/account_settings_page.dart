@@ -8,6 +8,8 @@ import '../services/api/ssl_Management.dart';
 import '../theme/app_theme.dart';
 import 'package:ovofun/page/models/color_models.dart';
 import 'login_page.dart';
+import 'points_exchange_page.dart';
+import 'sponsor_page.dart';
 import 'package:dio/dio.dart';
 
 class AccountSettingsPage extends StatefulWidget {
@@ -878,6 +880,89 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                     ),
                     onTap: _editQQ,
                   ),
+                  // 🔧 账号名行（不支持修改）
+                  _buildInfoRow(
+                    title: '账号名',
+                    content: Text(
+                      user?.username ?? '未设置',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    trailing: Text(
+                      '不支持修改',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[400],
+                      ),
+                    ),
+                    onTap: () {}, // 不允许点击
+                  ),
+                  // 会员等级行
+                  _buildInfoRow(
+                    title: '等级',
+                    content: Text(
+                      user?.groupName ?? '游客',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    onTap: () {}, // 不允许点击
+                  ),
+                  // 积分行
+                  _buildInfoRow(
+                    title: '积分',
+                    content: Text(
+                      '${user?.xp ?? 0}',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    trailing: Text(
+                      '查看详情',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppTheme.primaryColor,
+                      ),
+                    ),
+                    onTap: () {
+                      // 跳转到赞助页面
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => SponsorPage(),
+                        ),
+                      );
+                    },
+                  ),
+                  // VIP时长行（仅VIP显示）
+                  if (user?.isVip == true && user?.userEndTime != null)
+                    _buildInfoRow(
+                      title: 'VIP到期',
+                      content: Text(
+                        _formatExpiryDate(user!.userEndTime!),
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.black87,
+                        ),
+                      ),
+                      trailing: Text(
+                        '到期时间',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.primaryColor,
+                        ),
+                      ),
+                      onTap: () {
+                        // 可以添加查看VIP详情的逻辑
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('VIP详情功能开发中')),
+                        );
+                      },
+                    ),
                   // 密码行
                   _buildInfoRow(
                     title: '密码',
@@ -1087,5 +1172,30 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
         ),
       ),
     );
+  }
+
+  /// 格式化VIP到期日期
+  String _formatExpiryDate(String? userEndTime) {
+    if (userEndTime == null || userEndTime.isEmpty) {
+      return '已过期';
+    }
+
+    try {
+      // 将字符串时间戳转换为整数
+      final endTimeStamp = int.parse(userEndTime);
+      final endTime = DateTime.fromMillisecondsSinceEpoch(endTimeStamp * 1000);
+      final now = DateTime.now();
+      
+      // 检查是否已过期
+      if (endTime.isBefore(now)) {
+        return '已过期';
+      }
+      
+      // 格式化到期日期
+      return '${endTime.year}年${endTime.month.toString().padLeft(2, '0')}月${endTime.day.toString().padLeft(2, '0')}日';
+    } catch (e) {
+      print('[AccountSettings] 解析VIP到期时间失败: $e');
+      return '未知';
+    }
   }
 }
