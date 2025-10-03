@@ -33,10 +33,10 @@ jobs:
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      - name: Pod install with iOS 13
+      - name: Re-install CocoaPods
         run: |
           cd ios
-          # 确保 Podfile 设置 iOS 13.0
+          # 确保 Podfile 设置 iOS 13
           if ! grep -q "platform :ios" Podfile; then
             echo "platform :ios, '13.0'" > Podfile.tmp
             cat Podfile >> Podfile.tmp
@@ -44,29 +44,14 @@ jobs:
           fi
           sed -i '' "s/platform :ios, *'[^']*'/platform :ios, '13.0'/" Podfile
 
+          # 删除旧的 Pods 并重新安装，保持 Podfile.lock 同步
+          rm -rf Pods Podfile.lock .symlinks
           pod install --repo-update
-
-      - name: Force all Pods to iOS 13
-        run: |
-          cd ios
-          find Pods -name '*.podspec.json' -o -name '*.podspec' | while read spec; do
-            sed -i '' 's/ios.*9.0/ios, "13.0"/g' "$spec" || true
-            sed -i '' 's/ios.*10.0/ios, "13.0"/g' "$spec" || true
-            sed -i '' 's/ios.*11.0/ios, "13.0"/g' "$spec" || true
-            sed -i '' 's/ios.*12.0/ios, "13.0"/g' "$spec" || true
-          done
-
-      - name: Patch Xcode project for iOS 13 & disable Run Script
-        run: |
-          # 修改 Runner 工程的 Deployment Target
-          sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9]\+\.[0-9]\+/IPHONEOS_DEPLOYMENT_TARGET = 13.0/g' ios/Runner.xcodeproj/project.pbxproj
-
-          # 跳过 CI 环境里的 Flutter Run Script Phase，避免 exit code 65
-          sed -i '' '/9740EEB61CF901F6004384FC/,/shellScript/ s/isa = PBXShellScriptBuildPhase/isa = PBXShellScriptBuildPhase; runOnlyForDeploymentPostprocessing = 1;/' ios/Runner.xcodeproj/project.pbxproj
 
       - name: Build iOS Archive
         run: |
           cd ios
+          DISABLE_FLUTTER_BUILD_SCRIPT=1 \
           xcodebuild -workspace Runner.xcworkspace \
             -scheme Runner \
             -configuration Release \
