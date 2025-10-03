@@ -23,7 +23,6 @@ jobs:
           flutter --version
           xcodebuild -version
           pod --version
-          echo "Xcode supported iOS SDKs: $(xcodebuild -showsdks | grep iphoneos | awk '{print $4}')"
 
       # 2. 深度清理项目
       - name: Deep clean project
@@ -33,7 +32,28 @@ jobs:
           rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Caches/CocoaPods
           rm -rf ios/Flutter/Flutter.podspec
 
-      # 3. 同步Flutter项目的iOS最低版本（与Podfile一致）
+      # 3. 关键修复：配置CocoaPods仓库（添加trunk并使用国内镜像）
+      - name: Configure CocoaPods repositories
+        run: |
+          # 移除可能损坏的仓库配置
+          pod repo remove trunk || true
+          
+          # 添加国内镜像的trunk仓库（解决官方源访问问题）
+          echo "Adding CocoaPods trunk repo from TUNA mirror..."
+          pod repo add trunk https://mirrors.tuna.tsinghua.edu.cn/git/CocoaPods/Specs.git
+          
+          # 验证仓库是否添加成功
+          if pod repo list | grep -q "trunk"; then
+            echo "✅ Trunk repo added successfully"
+          else
+            echo "❌ Failed to add trunk repo"
+            exit 1
+          fi
+          
+          # 强制更新仓库索引
+          pod repo update trunk --verbose
+
+      # 4. 同步Flutter项目的iOS最低版本
       - name: Sync Flutter iOS deployment target
         run: |
           # 修改Flutter全局配置文件
@@ -68,7 +88,7 @@ jobs:
             puts "✅ Updated Runner.xcodeproj to iOS 12.0"
           '
 
-      # 4. 安装Flutter依赖
+      # 5. 安装Flutter依赖
       - name: Install Flutter dependencies
         run: |
           export IPHONEOS_DEPLOYMENT_TARGET=12.0
@@ -82,13 +102,16 @@ jobs:
             exit 1
           fi
 
-      # 5. 生成兼容的Podfile
+      # 6. 生成兼容的Podfile
       - name: Generate compatible Podfile
         run: |
           cd ios
           cat > Podfile <<EOF
           platform :ios, '12.0'
           ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+          # 使用国内镜像源加速依赖拉取
+          source 'https://mirrors.tuna.tsinghua.edu.cn/git/CocoaPods/Specs.git'
 
           project 'Runner', {
             'Debug' => :debug,
@@ -133,16 +156,13 @@ jobs:
           EOF
           echo "✅ Podfile generated"
 
-      # 6. 修复：正确执行Pod依赖更新（移除--no-repo-update错误选项）
+      # 7. 安装CocoaPods依赖
       - name: Install CocoaPods dependencies
         run: |
           cd ios
           export IPHONEOS_DEPLOYMENT_TARGET=12.0
           
-          # 1. 更新Pod仓库（仅更新trunk，避免全量更新耗时）
-          pod repo update trunk --verbose
-          
-          # 2. 执行pod install（用--no-repo-update避免重复更新仓库）
+          # 使用国内源安装依赖，避免官方源访问问题
           pod install --verbose --no-repo-update
           
           # 验证bonsoir_darwin安装
@@ -154,7 +174,7 @@ jobs:
             exit 1
           fi
 
-      # 7. 构建iOS
+      # 8. 构建iOS
       - name: Build iOS with xcodebuild
         run: |
           cd ios
@@ -173,7 +193,7 @@ jobs:
             clean \
             -verbose
 
-      # 8. 打包IPA
+      # 9. 打包IPA
       - name: Package IPA
         run: |
           APP_PATH="ios/build/Products/Release-iphoneos/Runner.app"
@@ -196,10 +216,11 @@ jobs:
             exit 1
           fi
 
-      # 9. 上传产物
+      # 10. 上传产物
       - name: Upload IPA to artifacts
         uses: actions/upload-artifact@v4
         with:
           name: flutter-ios-ipa
           path: ios/build/ios/iphoneos/FlutterIpaExport.ipa
           retention-days: 30
+    
