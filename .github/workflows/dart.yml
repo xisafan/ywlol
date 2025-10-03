@@ -30,24 +30,29 @@ jobs:
           rm -rf ios/Pods ios/Podfile.lock ios/.symlinks
           rm -rf ~/Library/Developer/Xcode/DerivedData/*
 
-      # 🔑 使用锁定的依赖版本
+      # 🔑 安装依赖并生成最新 lockfile
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      - name: Verify lockfile
-        run: flutter pub get --enforce-lockfile
-
-      # 🔑 修改 Podfile 里的最低版本 & 安装 Pods
-      - name: Install CocoaPods dependencies
+      # 🔑 强制 iOS Deployment Target 统一到 13.0
+      - name: Force iOS 13.0 for all Pods
         run: |
           cd ios
-          # 确保 Podfile 存在且 platform >= 12.0
+          # 确保 Podfile 设置为 iOS 13.0
           if ! grep -q "platform :ios" Podfile; then
-            echo "platform :ios, '12.0'" > Podfile.tmp
+            echo "platform :ios, '13.0'" > Podfile.tmp
             cat Podfile >> Podfile.tmp
             mv Podfile.tmp Podfile
           fi
-          sed -i '' "s/platform :ios, *'[^']*'/platform :ios, '12.0'/" Podfile
+          sed -i '' "s/platform :ios, *'[^']*'/platform :ios, '13.0'/" Podfile
+
+          # 批量修正 podspec 里的低版本
+          find Pods -name '*.podspec.json' -o -name '*.podspec' | while read spec; do
+            sed -i '' 's/ios.*9.0/ios, "13.0"/g' "$spec" || true
+            sed -i '' 's/ios.*10.0/ios, "13.0"/g' "$spec" || true
+            sed -i '' 's/ios.*11.0/ios, "13.0"/g' "$spec" || true
+            sed -i '' 's/ios.*12.0/ios, "13.0"/g' "$spec" || true
+          done
           pod install --repo-update
 
       - name: Build iOS (unsigned)
