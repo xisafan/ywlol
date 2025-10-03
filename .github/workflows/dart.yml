@@ -35,7 +35,7 @@ jobs:
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      # 4. 生成标准Podfile（确保Podfile存在，为pod install做准备）
+      # 4. 生成标准Podfile
       - name: Generate standard Podfile
         run: |
           cd ios
@@ -72,58 +72,91 @@ jobs:
           EOF
           fi
 
-      # 5. 先执行pod install（生成Pods.xcodeproj等文件）
-      - name: Install CocoaPods dependencies
+      # 5. 执行pod install + 修复路径检查（核心修复）
+      - name: Install CocoaPods dependencies (fix path check)
         run: |
+          # 进入ios目录并保持在此目录执行后续命令（避免路径混乱）
           cd ios
+          
+          # 执行pod install（保留详细日志）
           pod repo update --verbose
           pod install --verbose
-          # 验证Pods.xcodeproj是否生成
-          if [ -f "Pods/Pods.xcodeproj" ]; then
-            echo "✅ Pods.xcodeproj generated successfully"
-          else
-            echo "❌ Pods.xcodeproj not found! pod install failed."
+          
+          # 关键修复1：明确Pods.xcodeproj的绝对路径，避免相对路径歧义
+          PODS_PROJECT_PATH="$PWD/Pods/Pods.xcodeproj"
+          
+          # 关键修复2：添加延迟+重试检查（应对文件生成延迟）
+          echo "Checking if $PODS_PROJECT_PATH exists..."
+          RETRY_COUNT=0
+          MAX_RETRIES=3
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            if [ -f "$PODS_PROJECT_PATH" ]; then
+              echo "✅ Pods.xcodeproj found at: $PODS_PROJECT_PATH"
+              break
+            else
+              echo "⚠️ Retry $((RETRY_COUNT+1)): Pods.xcodeproj not found yet. Waiting 2 seconds..."
+              sleep 2
+              RETRY_COUNT=$((RETRY_COUNT+1))
+            fi
+          done
+          
+          # 最终检查：若多次重试仍未找到，才判定失败
+          if [ ! -f "$PODS_PROJECT_PATH" ]; then
+            echo "❌ Pods.xcodeproj not found after $MAX_RETRIES retries!"
+            # 输出目录结构供排查
+            echo "Current directory: $PWD"
+            echo "Directory contents:"
+            ls -la
+            echo "Pods directory contents:"
+            ls -la Pods/
             exit 1
           fi
 
-      # 6. 关键修复：修改Xcode配置（Runner + Pods，此时Pods文件已存在）
-      - name: Configure Xcode (suppress GLES warnings + disable signing)
+      # 6. 修改Xcode配置（抑制GLES警告 + 禁用签名）
+      - name: Configure Xcode (suppress warnings + disable signing)
         run: |
           cd ios
           # 安装xcodeproj工具
           sudo gem install xcodeproj --no-document
           
-          # Ruby脚本：先修改Runner项目，再修改Pods项目
+          # Ruby脚本：修改Runner和Pods项目
           ruby -e '
             require "xcodeproj"
+            require "fileutils"
 
             #######################################
-            # 1. 修改Runner项目：抑制警告 + 禁用签名
+            # 1. 修改Runner项目
             #######################################
-            runner_project = Xcodeproj::Project.open("Runner.xcodeproj")
-            runner_target = runner_project.targets.find { |t| t.name == "Runner" }
-            
-            runner_target.build_configurations.each do |config|
-              # 抑制OpenGLES废弃警告（Swift + Objective-C）
-              config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
-              config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
-              config.build_settings["OTHER_CFLAGS"] ||= []
-              config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
-              # 禁用签名（避免开发团队配置问题）
-              config.build_settings["DEVELOPMENT_TEAM"] = ""
-              config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
-              config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
+            runner_project_path = "Runner.xcodeproj"
+            if File.exist?(runner_project_path)
+              runner_project = Xcodeproj::Project.open(runner_project_path)
+              runner_target = runner_project.targets.find { |t| t.name == "Runner" }
+              
+              runner_target.build_configurations.each do |config|
+                # 抑制OpenGLES废弃警告
+                config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
+                config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+                config.build_settings["OTHER_CFLAGS"] ||= []
+                config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+                # 禁用签名
+                config.build_settings["DEVELOPMENT_TEAM"] = ""
+                config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
+                config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
+              end
+              
+              runner_project.save
+              puts "✅ Updated Runner project"
+            else
+              puts "❌ Runner.xcodeproj not found!"
+              exit 1
             end
-            runner_project.save
-            puts "✅ Updated Runner project configuration"
 
             #######################################
-            # 2. 修改Pods项目：为media_kit_video抑制警告
+            # 2. 修改Pods项目（针对media_kit_video）
             #######################################
             pods_project_path = "Pods/Pods.xcodeproj"
             if File.exist?(pods_project_path)
               pods_project = Xcodeproj::Project.open(pods_project_path)
-              # 仅针对media_kit_video插件添加抑制警告
               pods_project.targets.each do |pod_target|
                 next unless pod_target.name.include?("media_kit_video")
                 
@@ -133,8 +166,9 @@ jobs:
                   config.build_settings["OTHER_CFLAGS"] ||= []
                   config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
                 end
-                puts "✅ Updated media_kit_video pod configuration"
+                puts "✅ Updated media_kit_video pod"
               end
+              
               pods_project.save
             else
               puts "❌ Pods.xcodeproj not found (this should not happen after pod install)"
@@ -142,17 +176,18 @@ jobs:
             end
           '
 
-      # 7. 构建iOS版本（禁用图标优化，减少额外错误）
+      # 7. 构建iOS版本
       - name: Build iOS Release
         run: |
           flutter build ios --release --no-codesign --verbose \
             --no-tree-shake-icons
           
           # 验证构建产物
-          if [ -d "build/ios/iphoneos/Runner.app" ]; then
-            echo "✅ Build succeeded! App path: build/ios/iphoneos/Runner.app"
+          APP_PATH="build/ios/iphoneos/Runner.app"
+          if [ -d "$APP_PATH" ]; then
+            echo "✅ Build succeeded! App size: $(du -sh "$APP_PATH")"
           else
-            echo "❌ Build failed - Runner.app not found"
+            echo "❌ Build failed - Runner.app not found at $APP_PATH"
             exit 1
           fi
 
@@ -165,9 +200,9 @@ jobs:
           cd "$BUILD_PATH"
           zip -qq -r -9 FlutterIpaExport.ipa Payload
           
-          # 验证IPA生成
+          # 验证IPA
           if [ -f "FlutterIpaExport.ipa" ]; then
-            echo "✅ IPA generated: $(du -sh FlutterIpaExport.ipa)"
+            echo "✅ IPA generated! Size: $(du -sh FlutterIpaExport.ipa)"
           else
             echo "❌ IPA generation failed"
             exit 1
