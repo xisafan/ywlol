@@ -16,47 +16,124 @@ jobs:
         with:
           channel: 'stable'
           architecture: x64
-          
-      - name: Clean project and dependencies
+
+      # 1. 深度清理项目缓存
+      - name: Deep clean project
         run: |
           flutter clean
-          rm -rf ios/Pods ios/Podfile.lock
-          rm -rf ~/.pub-cache  # 清理 pub 缓存（可选，解决依赖冲突时用）
-      
+          rm -rf ios/Pods ios/Podfile.lock ios/.symlinks ios/Flutter/Flutter.framework
+          rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Caches/CocoaPods
+          rm -rf ~/.pub-cache
+
+      # 2. 安装Flutter依赖
       - name: Install Flutter dependencies
         run: flutter pub get
-      
-      - name: Configure Xcode project
+
+      # 3. 生成标准Podfile
+      - name: Generate standard Podfile
         run: |
           cd ios
-          xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
-            DEVELOPMENT_TEAM="" \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
-      
-      - name: Install iOS dependencies (CocoaPods)
+          if [ ! -f "Podfile" ]; then
+            cat > Podfile <<EOF
+          platform :ios, '11.0'
+          ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+          project 'Runner', {
+            'Debug' => :debug,
+            'Profile' => :release,
+            'Release' => :release,
+          }
+
+          def flutter_root
+            generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+            unless File.exist?(generated_xcode_build_settings_path)
+              raise "#{generated_xcode_build_settings_path} must exist. Run 'flutter pub get' first."
+            end
+
+            File.foreach(generated_xcode_build_settings_path) do |line|
+              matches = line.match(/FLUTTER_ROOT\=(.*)/)
+              return matches[1].strip if matches
+            end
+            raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}"
+          end
+
+          require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+          target 'Runner' do
+            use_frameworks!
+            use_modular_headers!
+            flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+          end
+
+          post_install do |installer|
+            installer.pods_project.targets.each do |target|
+              flutter_additional_ios_build_settings(target)
+            end
+          end
+          EOF
+            if [ -f "Podfile" ]; then
+              echo "✅ Podfile generated successfully"
+            else
+              echo "❌ Failed to generate Podfile"
+              exit 1
+            fi
+          else
+            echo "✅ Podfile exists, skipping generation"
+          fi
+
+      # 4. 安装CocoaPods依赖
+      - name: Install CocoaPods dependencies
         run: |
-          pod repo update
-          pod install
-        working-directory: ios
+          cd ios
+          sudo gem install cocoapods --no-document
+          pod repo update --verbose
+          pod install --verbose --repo-update
+          
+          if [ -f "Pods/Target Support Files/Pods-Runner/Pods-Runner-frameworks-Release-input-files.xcfilelist" ]; then
+            echo "✅ Required xcfilelist files exist"
+            chmod -R 777 Pods/Target\ Support\ Files/
+          else
+            echo "❌ Missing required xcfilelist files"
+            exit 1
+          fi
 
-      - name: Build iOS Release version
-        run: flutter build ios --release --no-codesign --verbose
+      # 5. 构建iOS版本（不指定输出路径，使用默认路径）
+      - name: Build iOS Release
+        run: |
+          # 移除所有路径参数，使用Flutter默认构建路径
+          flutter build ios --release --no-codesign --verbose
+          
+          # 验证构建产物（Flutter默认路径）
+          DEFAULT_PATH="build/ios/iphoneos"
+          if [ -d "$DEFAULT_PATH/Runner.app" ]; then
+            echo "✅ Build successful. App path: $DEFAULT_PATH"
+          else
+            echo "❌ Build failed - Runner.app not found in $DEFAULT_PATH"
+            exit 1
+          fi
 
-      # 后续打包和上传步骤不变...
-      - name: Create IPA directory structure
-        run: mkdir -p build/ios/iphoneos/Payload
-        
-      - name: Move app to Payload directory
-        run: mv build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
+      # 6. 打包IPA（使用Flutter默认构建路径）
+      - name: Package IPA
+        run: |
+          # 使用Flutter默认构建路径
+          BUILD_PATH="build/ios/iphoneos"
+          mkdir -p "$BUILD_PATH/Payload"
+          mv "$BUILD_PATH/Runner.app" "$BUILD_PATH/Payload/"
+          cd "$BUILD_PATH"
+          zip -qq -r -9 FlutterIpaExport.ipa Payload
+          
+          if [ -f "FlutterIpaExport.ipa" ]; then
+            echo "✅ IPA created: $(du -sh FlutterIpaExport.ipa)"
+          else
+            echo "❌ Failed to create IPA"
+            exit 1
+          fi
 
-      - name: Zip to IPA file
-        run: zip -qq -r -9 FlutterIpaExport.ipa Payload
-        working-directory: build/ios/iphoneos
-
+      # 7. 上传产物
       - name: Upload IPA to artifacts
         uses: actions/upload-artifact@v4
         with:
           name: flutter-ios-ipa
           path: build/ios/iphoneos/FlutterIpaExport.ipa
+          retention-days: 30
+    
