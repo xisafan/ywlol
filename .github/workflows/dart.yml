@@ -32,21 +32,30 @@ jobs:
           rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Caches/CocoaPods
           rm -rf ios/Flutter/Flutter.podspec
 
-      # 3. 关键修复：配置CocoaPods使用国内CDN镜像（避免trunk命名冲突）
+      # 3. 关键修复：初始化并配置CocoaPods国内CDN镜像
       - name: Configure CocoaPods with TUNA CDN mirror
         run: |
-          # 备份并修改CocoaPods配置文件，使用国内CDN
-          if [ -f ~/.cocoapods/config.yaml ]; then
+          # 确保CocoaPods配置目录存在
+          mkdir -p ~/.cocoapods
+          
+          # 初始化配置文件（如果不存在）
+          if [ ! -f ~/.cocoapods/config.yaml ]; then
+            echo "---" > ~/.cocoapods/config.yaml
+            echo "Initializing new CocoaPods config file"
+          else
+            # 备份现有配置
             cp ~/.cocoapods/config.yaml ~/.cocoapods/config.yaml.bak
+            echo "Backed up existing CocoaPods config"
           fi
           
-          # 配置使用清华大学CDN镜像（替代官方trunk CDN）
-          echo "---
-          cdn_url: 'https://mirrors.tuna.tsinghua.edu.cn/git/CocoaPods/Specs.git'
-          " > ~/.cocoapods/config.yaml
+          # 使用sed修改配置文件，设置国内CDN镜像
+          # 先删除现有cdn_url配置（如果存在）
+          sed -i '' '/cdn_url:/d' ~/.cocoapods/config.yaml
+          # 添加清华大学CDN镜像
+          echo "cdn_url: 'https://mirrors.tuna.tsinghua.edu.cn/git/CocoaPods/Specs.git'" >> ~/.cocoapods/config.yaml
           
           # 验证配置是否生效
-          echo "CocoaPods config:"
+          echo "Final CocoaPods config:"
           cat ~/.cocoapods/config.yaml
           
           # 清理旧的仓库缓存
