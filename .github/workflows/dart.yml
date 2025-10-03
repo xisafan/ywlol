@@ -17,12 +17,13 @@ jobs:
           channel: 'stable'
           architecture: x64
 
-      # 1. 显示环境信息
+      # 1. 显示环境信息（确认Xcode版本与最低支持系统）
       - name: Show environment info
         run: |
           flutter --version
           xcodebuild -version
           pod --version
+          echo "Xcode supported iOS versions: $(xcodebuild -showsdks | grep iphoneos | awk '{print $4}')"
 
       # 2. 深度清理项目
       - name: Deep clean project
@@ -35,13 +36,12 @@ jobs:
       - name: Install Flutter dependencies
         run: flutter pub get
 
-      # 4. 生成标准Podfile
-      - name: Generate standard Podfile
+      # 4. 生成适配Xcode 12+的Podfile（核心：统一部署目标+签名禁用）
+      - name: Generate Podfile (fix deployment target + signing)
         run: |
           cd ios
-          if [ ! -f "Podfile" ]; then
-            cat > Podfile <<EOF
-          platform :ios, '11.0'
+          cat > Podfile <<EOF
+          platform :ios, '12.0'  # 关键：将项目最低支持版本提升到Xcode支持的12.0
           ENV['COCOAPODS_DISABLE_STATS'] = 'true'
           project 'Runner', { 'Debug' => :debug, 'Profile' => :release, 'Release' => :release }
 
@@ -67,46 +67,114 @@ jobs:
           post_install do |installer|
             installer.pods_project.targets.each do |target|
               flutter_additional_ios_build_settings(target)
-              # 关键：Podfile中额外禁用签名（覆盖插件自带配置）
+              
+              #######################################
+              # 修复1：统一所有插件的部署目标为12.0
+              #######################################
               target.build_configurations.each do |config|
+                # 强制将所有插件的最低支持版本设为12.0（覆盖插件自带的9.0/11.0）
+                config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "12.0"
+                
+                #######################################
+                # 修复2：彻底禁用签名（覆盖所有目标）
+                #######################################
                 config.build_settings["DEVELOPMENT_TEAM"] = ""
                 config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
                 config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
                 config.build_settings["CODE_SIGN_IDENTITY"] = ""
+                config.build_settings["CODE_SIGN_ENTITLEMENTS"] = ""
+                
+                #######################################
+                # 修复3：抑制OpenGLES废弃警告
+                #######################################
+                config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
+                config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+                config.build_settings["OTHER_CFLAGS"] ||= []
+                config.build_settings["OTHER_CFLAGS"] << "-DGLES_SILENCE_DEPRECATION"
               end
+            end
+            
+            # 额外：确保Pods项目本身的部署目标也是12.0
+            installer.pods_project.build_configurations.each do |config|
+              config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "12.0"
             end
           end
           EOF
-          fi
+          echo "✅ Podfile generated with iOS 12.0 target and signing disabled"
 
-      # 5. 执行pod install（确保Pods配置正确）
+      # 5. 执行pod install（应用Podfile配置）
       - name: Install CocoaPods dependencies
         run: |
           cd ios
+          # 强制更新Pod仓库，确保拉取支持iOS 12+的插件版本
           pod repo update --verbose
           pod install --verbose
           
-          # 验证Pods.xcodeproj有效性
-          if [ ! -d "Pods/Pods.xcodeproj" ] || [ ! -f "Pods/Pods.xcodeproj/project.pbxproj" ]; then
-            echo "❌ Invalid Pods.xcodeproj!"
-            ls -la Pods/Pods.xcodeproj/
+          # 验证Pods配置是否生效
+          if [ -f "Pods/Pods.xcodeproj/project.pbxproj" ]; then
+            echo "✅ Pods project generated. Checking deployment target..."
+            # 检查Pods项目的最低支持版本是否为12.0
+            grep -r "IPHONEOS_DEPLOYMENT_TARGET = 12.0" Pods/Pods.xcodeproj/project.pbxproj > /dev/null
+            if [ $? -eq 0 ]; then
+              echo "✅ Pods deployment target set to 12.0"
+            else
+              echo "❌ Pods deployment target not updated!"
+              exit 1
+            fi
+          else
+            echo "❌ Pod install failed (Pods.xcodeproj missing)"
             exit 1
           fi
-          echo "✅ Pod install completed successfully"
 
-      # 6. 关键修复：用xcodebuild直接构建（强制禁用签名）
-      - name: Build iOS with xcodebuild (force disable signing)
+      # 6. 修复Runner项目配置（确保与Pod配置一致）
+      - name: Fix Runner project settings
+        run: |
+          cd ios
+          sudo gem install xcodeproj --no-document
+          
+          # Ruby脚本：更新Runner的部署目标和签名配置
+          ruby -e '
+            require "xcodeproj"
+            project = Xcodeproj::Project.open("Runner.xcodeproj")
+            target = project.targets.find { |t| t.name == "Runner" }
+            
+            # 1. 统一Runner的部署目标为12.0
+            project.build_configurations.each do |config|
+              config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "12.0"
+            end
+            target.build_configurations.each do |config|
+              config.build_settings["IPHONEOS_DEPLOYMENT_TARGET"] = "12.0"
+            end
+            
+            # 2. 彻底禁用Runner签名（覆盖Xcode默认检查）
+            target.build_configurations.each do |config|
+              config.build_settings["DEVELOPMENT_TEAM"] = ""
+              config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
+              config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
+              config.build_settings["CODE_SIGN_IDENTITY"] = ""
+              config.build_settings["CODE_SIGN_ENTITLEMENTS"] = ""
+              # 抑制警告
+              config.build_settings["OTHER_SWIFT_FLAGS"] ||= []
+              config.build_settings["OTHER_SWIFT_FLAGS"] << "-DGLES_SILENCE_DEPRECATION"
+            end
+            
+            project.save
+            puts "✅ Runner project updated: iOS 12.0 target + signing disabled"
+          '
+
+      # 7. 用xcodebuild构建（强制应用所有配置）
+      - name: Build iOS with xcodebuild
         run: |
           cd ios
           
-          # 定义构建参数（强制覆盖签名配置）
+          # 构建参数：与Pod/Runner配置保持一致
           XCODE_WORKSPACE="Runner.xcworkspace"
           XCODE_SCHEME="Runner"
-          BUILD_DIR="$PWD/build"  # 构建产物输出目录
           CONFIGURATION="Release"
-          SDK="iphoneos"  # 针对真机架构（若要模拟器用iphonesimulator）
+          SDK="iphoneos"
+          BUILD_DIR="$PWD/build"
           
-          # 执行xcodebuild构建：直接传递签名禁用参数
+          # 执行构建：命令行参数优先级最高，确保配置不被覆盖
           xcodebuild build \
             -workspace "$XCODE_WORKSPACE" \
             -scheme "$XCODE_SCHEME" \
@@ -114,61 +182,52 @@ jobs:
             -sdk "$SDK" \
             -derivedDataPath "$BUILD_DIR/DerivedData" \
             -archivePath "$BUILD_DIR/Runner.xcarchive" \
-            # 核心签名参数：强制禁用
+            # 统一部署目标
+            IPHONEOS_DEPLOYMENT_TARGET=12.0 \
+            # 禁用签名
             DEVELOPMENT_TEAM="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
-            # 抑制OpenGLES废弃警告
+            # 抑制警告
             OTHER_SWIFT_FLAGS="-DGLES_SILENCE_DEPRECATION" \
             OTHER_CFLAGS="-DGLES_SILENCE_DEPRECATION" \
-            # 额外参数：避免构建缓存干扰
+            # 清理旧产物
             clean \
-            -quiet  # 减少日志冗余（需要详细日志可删除）
-          
-          # 验证构建产物（xcodebuild输出路径：BUILD_DIR/Products/Release-iphoneos/Runner.app）
-          APP_PATH="$BUILD_DIR/Products/$CONFIGURATION-$SDK/Runner.app"
-          if [ -d "$APP_PATH" ]; then
-            echo "✅ xcodebuild succeeded! App path: $APP_PATH"
-            # 复制到Flutter默认路径，便于后续打包
-            mkdir -p ../../build/ios/iphoneos/
-            cp -R "$APP_PATH" ../../build/ios/iphoneos/
-          else
-            echo "❌ xcodebuild failed! App not found at $APP_PATH"
-            # 输出构建日志供排查
-            cat "$BUILD_DIR/DerivedData/Logs/Build/Report.build.log"
-            exit 1
-          fi
+            # 显示详细日志（便于排查）
+            -verbose
 
-      # 7. 打包IPA（使用xcodebuild生成的产物）
+      # 8. 打包IPA
       - name: Package IPA
         run: |
-          BUILD_PATH="build/ios/iphoneos"
-          # 验证Runner.app存在
-          if [ ! -d "$BUILD_PATH/Runner.app" ]; then
-            echo "❌ Runner.app missing at $BUILD_PATH"
+          # 定位xcodebuild生成的Runner.app（路径固定）
+          APP_PATH="ios/build/Products/Release-iphoneos/Runner.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "❌ Runner.app not found at $APP_PATH"
             exit 1
           fi
           
-          # 生成IPA（iOS要求Payload目录结构）
-          mkdir -p "$BUILD_PATH/Payload"
-          mv "$BUILD_PATH/Runner.app" "$BUILD_PATH/Payload/"
-          cd "$BUILD_PATH"
+          # 生成IPA（符合iOS打包规范）
+          IPA_DIR="ios/build/ipa"
+          mkdir -p "$IPA_DIR/Payload"
+          mv "$APP_PATH" "$IPA_DIR/Payload/"
+          cd "$IPA_DIR"
           zip -qq -r -9 FlutterIpaExport.ipa Payload
           
-          # 验证IPA
           if [ -f "FlutterIpaExport.ipa" ]; then
             echo "✅ IPA generated! Size: $(du -sh FlutterIpaExport.ipa)"
+            # 复制到便于上传的路径
+            cp FlutterIpaExport.ipa ../../build/ios/iphoneos/
           else
             echo "❌ IPA generation failed"
             exit 1
           fi
 
-      # 8. 上传产物
+      # 9. 上传产物
       - name: Upload IPA to artifacts
         uses: actions/upload-artifact@v4
         with:
           name: flutter-ios-ipa
-          path: build/ios/iphoneos/FlutterIpaExport.ipa
+          path: ios/build/ios/iphoneos/FlutterIpaExport.ipa
           retention-days: 30
