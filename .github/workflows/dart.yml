@@ -14,24 +14,45 @@ jobs:
         with:
           channel: 'stable'
           architecture: x64
+          
       - run: flutter pub get
       
-
+      # 配置Xcode开发团队
+      - name: Configure Xcode project
+        run: |
+          cd ios
+          # 设置开发团队ID (可以留空，但需要存在该配置)
+          xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+      
       - run: pod repo update
         working-directory: ios
+      
+      - run: pod install
+        working-directory: ios
 
-      - run: flutter build ios --release --no-codesign
+      - run: flutter build ios --release --no-codesign --verbose
 
-      - run: mkdir Payload
-        working-directory: build/ios/iphoneos
+      # 创建IPA包结构
+      - run: mkdir -p build/ios/iphoneos/Payload
+        working-directory: .
+        
+      - run: mv build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
+        working-directory: .
 
-      - run: mv Runner.app/ Payload
-        working-directory: build/ios/iphoneos
-
-      - name: Zip output
+      - name: Zip output to IPA
         run: zip -qq -r -9 FlutterIpaExport.ipa Payload
         working-directory: build/ios/iphoneos
 
+      - name: Upload IPA to artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: flutter-ios-ipa
+          path: build/ios/iphoneos/FlutterIpaExport.ipa
+          
       - name: Upload binaries to release
         uses: svenstaro/upload-release-action@v2
         with:
